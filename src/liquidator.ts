@@ -81,7 +81,7 @@ export class Liquidator {
         return;
       }
       await this.chain.submit(market, candidate, repayAmount, route);
-      await this.chain.sweep(market.helper, this.options.treasury);
+      await this.chain.sweep(market, this.options.treasury);
       this.firstUnhealthyAt.delete(candidateKey);
       this.failures.delete(candidateKey);
     } catch (error) {

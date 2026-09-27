@@ -14,8 +14,10 @@ function positiveInteger(name: string, fallback: number): number {
 
 export interface LiquidatorConfig {
   rpcUrl: string;
+  chainId: number;
   privateKey: `0x${string}`;
   indexerUrl: string;
+  routeApiUrl: string;
   markets: MarketAddresses[];
   treasury: Address;
   pollIntervalMs: number;
@@ -29,8 +31,10 @@ export function liquidatorConfig(argv = process.argv): LiquidatorConfig {
   if (!Array.isArray(markets) || markets.length === 0) throw new Error('KEEPER_MARKETS_JSON must contain at least one market');
   return {
     rpcUrl: required('KEEPER_RPC_URL'),
+    chainId: positiveInteger('KEEPER_CHAIN_ID', 4663),
     privateKey: required('KEEPER_PRIVATE_KEY') as `0x${string}`,
     indexerUrl: required('KEEPER_INDEXER_URL').replace(/\/$/, ''),
+    routeApiUrl: required('KEEPER_ROUTE_API_URL').replace(/\/$/, ''),
     markets,
     treasury: required('KEEPER_TREASURY') as Address,
     pollIntervalMs: positiveInteger('KEEPER_POLL_INTERVAL_MS', 2_000),

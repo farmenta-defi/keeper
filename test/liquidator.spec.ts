@@ -30,7 +30,7 @@ describe('Liquidator', () => {
     await bot.cycle();
     expect(chain.simulate).toHaveBeenCalledWith(market, candidate, 1_000_000n, expect.anything());
     expect(chain.submit).toHaveBeenCalledOnce();
-    expect(chain.sweep).toHaveBeenCalledWith(market.helper, expect.any(String));
+    expect(chain.sweep).toHaveBeenCalledWith(market, expect.any(String));
   });
 
   it('does not submit an unprofitable transaction after gas', async () => {
