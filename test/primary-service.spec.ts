@@ -41,6 +41,40 @@ describe('PrimaryKeeperService', () => {
     expect(deps.alerts.send).toHaveBeenCalledWith(expect.stringContaining('exceeds'));
   });
 
+  it('alerts on gas only when the day exceeds the budget scaled to the pool count, for 1 and 10 pools', async () => {
+    for (const poolCount of [1, 10]) {
+      const pools = Array.from({ length: poolCount }, (_, index) => pool(index + 1));
+      const counts = pools.map(() => 0);
+      // One filling cycle's scaled budget at the mocked receipt's gas price.
+      const cycleBudget = (21_000 + 44_237 * poolCount) * 20_000_000 / 1e18 * 2_400;
+
+      const within = dependencies(pools, counts, { costUsd: cycleBudget, budgetUsd: cycleBudget });
+      await new PrimaryKeeperService(within.indexer, within.recorder, within.store, within.alerts, 2_400).run({ dryRun: false });
+      expect(within.alerts.send).not.toHaveBeenCalled();
+
+      const over = dependencies(pools, counts, { costUsd: cycleBudget * 1.01, budgetUsd: cycleBudget });
+      await new PrimaryKeeperService(over.indexer, over.recorder, over.store, over.alerts, 2_400).run({ dryRun: false });
+      expect(over.alerts.send).toHaveBeenCalledWith(expect.stringContaining('filling budget'));
+    }
+  });
+
+  it('writes the heartbeat after a successful or empty run, and not after a failed one, so the FAR-36 watchdog sees silence', async () => {
+    const recorded = dependencies([pool(1)], [0]);
+    await new PrimaryKeeperService(recorded.indexer, recorded.recorder, recorded.store, recorded.alerts, 2_400, () => 1_700_000_000).run({ dryRun: false });
+    expect(recorded.store.heartbeat).toHaveBeenCalledWith(1_700_000_000);
+
+    const empty = dependencies([pool(1)], [0]);
+    vi.mocked(empty.recorder.debts).mockResolvedValue([0n]);
+    await new PrimaryKeeperService(empty.indexer, empty.recorder, empty.store, empty.alerts, 2_400, () => 1_700_000_000).run({ dryRun: false });
+    expect(empty.recorder.submitBatch).not.toHaveBeenCalled();
+    expect(empty.store.heartbeat).toHaveBeenCalledWith(1_700_000_000);
+
+    const failed = dependencies([pool(1)], [0]);
+    vi.mocked(failed.recorder.waitForReceipt).mockRejectedValue(new Error('recordBatch reverted: 0xtransaction'));
+    await expect(new PrimaryKeeperService(failed.indexer, failed.recorder, failed.store, failed.alerts, 2_400).run({ dryRun: false })).rejects.toThrow('reverted');
+    expect(failed.store.heartbeat).not.toHaveBeenCalled();
+  });
+
   it('alerts before stale mode when a selected pool is older than 600 seconds', async () => {
     const deps = dependencies([pool(1, 601)], [0]);
     await new PrimaryKeeperService(deps.indexer, deps.recorder, deps.store, deps.alerts, 2_400).run({ dryRun: false });

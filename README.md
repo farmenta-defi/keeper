@@ -26,7 +26,8 @@ transactions unlikely while preserving recovery when the VPS is unavailable.
 
 ## Setup
 
-Install Bun, copy `.env.example` to `.env`, restrict it to the service account, and populate the
+Run the primary under its own Unix user on the VPS, with its own low-balance hot wallet (spec §13);
+the backup's wallet is a different one. Install Bun, copy `.env.example` to `.env`, restrict it to that user, and populate the
 addresses from the deployment configuration. `DATABASE_URL` is required only by the primary VPS
 process and must target the shared `farmenta` database. The backup GitHub workflow must receive
 only its listed `KEEPER_BACKUP_*` and Telegram secrets; it must not receive `DATABASE_URL` or an
