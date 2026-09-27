@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BackupKeeperService } from '../src/backup-service.js';
+import { BackupKeeperService, reportBackupFailure } from '../src/backup-service.js';
 import type { AlertSink, BackupPoolSource, PoolKey, Recorder } from '../src/types.js';
 
 const stalePool: PoolKey = { id: '0x0000000000000000000000000000000000000000000000000000000000000001', currency0: '0x0000000000000000000000000000000000000001', currency1: '0x0000000000000000000000000000000000000002', fee: 3_000, tickSpacing: 60, hooks: '0x0000000000000000000000000000000000000000', observationAgeSeconds: 421 };
@@ -33,5 +33,18 @@ describe('BackupKeeperService', () => {
     expect(deps.recorder.submitBatch).not.toHaveBeenCalled();
     expect(deps.recorder.waitForReceipt).not.toHaveBeenCalled();
     expect(deps.alerts.send).not.toHaveBeenCalled();
+  });
+
+  it('alerts a failed run without leaking the paid RPC URL, and survives a failing alert', async () => {
+    const rpcUrl = 'https://robinhood.g.alchemy.com/v2/SECRET_KEY';
+    const alerts: AlertSink = { send: vi.fn() };
+    await reportBackupFailure(new Error(`HTTP request failed. URL: ${rpcUrl} Status: 429`), alerts, rpcUrl);
+    expect(alerts.send).toHaveBeenCalledWith('Backup keeper run failed: HTTP request failed. URL: <rpc> Status: 429');
+
+    const failing: AlertSink = { send: vi.fn().mockRejectedValue(new Error('Telegram returned 502')) };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(reportBackupFailure(new Error('reverted'), failing, rpcUrl)).resolves.toBeUndefined();
+    expect(logged).toHaveBeenCalled();
+    logged.mockRestore();
   });
 });
