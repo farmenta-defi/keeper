@@ -13,7 +13,7 @@ function harness(state = unhealthy) {
   const chain: Chain = {
     positions: vi.fn(async () => new Map([[candidate.tokenId, state]])),
     quote: vi.fn(async () => ({ calldata: '0x1234' as const, expectedProfit: 1_000_000n })),
-    simulate: vi.fn(async () => 100n), gasPrice: vi.fn(async () => 1n), submit: vi.fn(async () => '0xabc' as const),
+    simulate: vi.fn(async () => 100n), gasPrice: vi.fn(async () => 1n), submit: vi.fn(async () => '0xabc' as const), waitForReceipt: vi.fn(async () => undefined),
     sweep: vi.fn(async () => '0xsweep' as const), gasBalance: vi.fn(async () => 10_000n),
   };
   const alerts: AlertSink = { send: vi.fn(async () => undefined) };
@@ -30,6 +30,7 @@ describe('Liquidator', () => {
     await bot.cycle();
     expect(chain.simulate).toHaveBeenCalledWith(market, candidate, 1_000_000n, expect.anything());
     expect(chain.submit).toHaveBeenCalledOnce();
+    expect(chain.waitForReceipt).toHaveBeenCalledWith('0xabc');
     expect(chain.sweep).toHaveBeenCalledWith(market, expect.any(String));
   });
 
@@ -59,6 +60,16 @@ describe('Liquidator', () => {
     vi.mocked(chain.simulate).mockRejectedValue(new Error('PositionIsHealthy'));
     await bot.cycle();
     expect(chain.submit).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates repeated failure alerts without disclosing provider errors', async () => {
+    const { bot, chain, alerts } = harness();
+    vi.mocked(chain.simulate).mockRejectedValue(new Error('https://paid-rpc.example failed'));
+    await bot.cycle();
+    await bot.cycle();
+    await bot.cycle();
+    expect(alerts.send).toHaveBeenCalledTimes(1);
+    expect(alerts.send).toHaveBeenCalledWith(expect.not.stringContaining('paid-rpc'));
   });
 
   it('prints a transaction plan in dry-run mode without sending', async () => {

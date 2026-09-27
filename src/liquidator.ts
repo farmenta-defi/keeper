@@ -21,6 +21,8 @@ export interface LiquidatorOptions {
 export class Liquidator {
   private readonly firstUnhealthyAt = new Map<string, number>();
   private readonly failures = new Map<string, number>();
+  private readonly lastAlertAt = new Map<string, number>();
+  private running = false;
 
   constructor(
     private readonly source: CandidateSource,
@@ -30,8 +32,18 @@ export class Liquidator {
   ) {}
 
   async cycle(): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+    try {
+      await this.runCycle();
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async runCycle(): Promise<void> {
     if (await this.chain.gasBalance() < this.options.minGasBalance) {
-      await this.alerts.send('keeper liquidator gas balance is below its configured minimum');
+      await this.alert('gas-balance', 'keeper liquidator gas balance is below its configured minimum');
       return;
     }
 
@@ -62,7 +74,7 @@ export class Liquidator {
     const rampActive = state.rampEndsAt > now;
     const persistedFor = now - firstSeenAt;
     const alertAfter = rampActive ? 180 : 120;
-    if (persistedFor > alertAfter) await this.alerts.send(`liquidation candidate ${candidate.tokenId} remains unhealthy for ${persistedFor}s`);
+    if (persistedFor > alertAfter) await this.alert(`unhealthy:${candidateKey}`, `liquidation candidate ${candidate.tokenId} remains unhealthy for ${persistedFor}s`);
 
     if (rampActive && persistedFor < RAMP_GRACE_SECONDS) return;
 
@@ -80,7 +92,8 @@ export class Liquidator {
         (this.options.log ?? console.log)(JSON.stringify(serializePlan(plan)));
         return;
       }
-      await this.chain.submit(market, candidate, repayAmount, route);
+      const transactionHash = await this.chain.submit(market, candidate, repayAmount, route);
+      await this.chain.waitForReceipt(transactionHash);
       await this.chain.sweep(market, this.options.treasury);
       this.firstUnhealthyAt.delete(candidateKey);
       this.failures.delete(candidateKey);
@@ -88,8 +101,15 @@ export class Liquidator {
       // A race loser sees the current helper call revert during eth_call and never broadcasts.
       const failures = (this.failures.get(candidateKey) ?? 0) + 1;
       this.failures.set(candidateKey, failures);
-      if (failures >= 2) await this.alerts.send(`liquidation ${candidate.tokenId} failed ${failures} times: ${message(error)}`);
+      if (failures >= 2) await this.alert(`failure:${candidateKey}`, `liquidation ${candidate.tokenId} failed ${failures} times: ${safeReason(error)}`);
     }
+  }
+
+  private async alert(subject: string, text: string): Promise<void> {
+    const now = (this.options.now ?? unixNow)();
+    if ((this.lastAlertAt.get(subject) ?? 0) + 600 > now) return;
+    this.lastAlertAt.set(subject, now);
+    try { await this.alerts.send(text); } catch { /* Alert delivery must not stop liquidation monitoring. */ }
   }
 }
 
@@ -99,7 +119,12 @@ function chunks<T>(items: T[], size: number): T[][] {
 
 function key(candidate: Candidate): string { return `${candidate.market}:${candidate.tokenId}`; }
 function unixNow(): number { return Math.floor(Date.now() / 1_000); }
-function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function safeReason(error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error);
+  if (/FeePurchaseUnderfunded/.test(reason)) return 'fee purchase was underfunded';
+  if (/PositionIsHealthy/.test(reason)) return 'position was already healthy';
+  return 'simulation or execution failed';
+}
 
 function serializePlan(plan: TransactionPlan) {
   return {

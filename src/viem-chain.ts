@@ -45,6 +45,7 @@ export class ViemChain implements Chain {
   }
 
   async positions(market: MarketAddresses, candidates: Candidate[]): Promise<Map<bigint, PositionState>> {
+    if (candidates.length === 0) return new Map();
     const calls = candidates.flatMap((candidate) => [
       { address: market.lens, abi: lensAbi, functionName: 'liquidationHealthFactor' as const, args: [candidate.tokenId] },
       { address: market.lens, abi: lensAbi, functionName: 'liquidationCloseFactorBps' as const, args: [candidate.tokenId] },
@@ -77,6 +78,11 @@ export class ViemChain implements Chain {
 
   async submit(market: MarketAddresses, candidate: Candidate, repayAmount: bigint, route: SwapRoute): Promise<Hex> {
     return this.walletClient.writeContract({ address: market.helper, abi: helperAbi, functionName: 'execute', args: [candidate.tokenId, repayAmount, route.calldata] });
+  }
+
+  async waitForReceipt(hash: Hex): Promise<void> {
+    const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== 'success') throw new Error('liquidation transaction reverted');
   }
 
   async sweep(market: MarketAddresses, treasury: Address): Promise<Hex | undefined> {
