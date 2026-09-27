@@ -40,13 +40,22 @@ indexer URL.
 Keeper migrations create the `backend` schema and `backend.service_heartbeat` if the backend
 repository has not yet done so (with the same definition), and record their history in
 `backend.keeper_migrations`, separate from the backend's. Run them with the schema owner's
-connection string, then provision the keeper's own least-privilege role as a superuser:
+connection string (on the VPS that is `farmenta_backend`, which has no `CREATE` on the database
+and does not need it once the schema exists), then provision the keeper's own least-privilege
+role as a superuser:
 
 ```sh
 bun install --frozen-lockfile
 DATABASE_URL=<schema owner URL> bun run db:migrate
 psql -U postgres -d farmenta -f scripts/create-db-role.sql
 psql -U postgres -c '\password farmenta_keeper'
+```
+
+Install the cron entry for the keeper's Unix user. The script changes to the repository and adds
+`~/.bun/bin` to `PATH` itself, because cron provides neither:
+
+```
+*/5 * * * * /path/to/keeper/scripts/keeper-record-batch-cron.sh
 ```
 
 Every indexer, Telegram, and database call has a timeout, so a hung dependency cannot keep the
