@@ -20,6 +20,10 @@ wallet credentials are not available to API workflows. The source of truth is
   absent from that window. It never accesses Ponder or PostgreSQL. A submitted backup transaction
   sends a Telegram alert immediately, and so does a failed backup run.
 
+The backup workflow stays skipped until the repository variable `KEEPER_BACKUP_ENABLED` is set
+to `true`; set it only after the contracts are deployed and every `KEEPER_*` and Telegram secret
+the workflow reads exists.
+
 The schedulers intentionally do not coordinate a database slot. `recordBatch` ignores an
 observation already made at the same timestamp; the 420-second backup threshold makes duplicate
 transactions unlikely while preserving recovery when the VPS is unavailable.

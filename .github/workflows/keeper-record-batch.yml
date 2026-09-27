@@ -14,6 +14,10 @@ concurrency:
 
 jobs:
   record:
+    # Off until the contracts are deployed and the backup's secrets exist; a skipped run still
+    # shows that the schedule trigger fires. Enable with the repository variable
+    # KEEPER_BACKUP_ENABLED=true.
+    if: vars.KEEPER_BACKUP_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
