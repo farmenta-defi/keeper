@@ -1,0 +1,29 @@
+name: Backup keeper recordBatch
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run keeper:backup
+        env:
+          KEEPER_RPC_URL: ${{ secrets.KEEPER_BACKUP_RPC_URL }}
+          KEEPER_BACKUP_PRIVATE_KEY: ${{ secrets.KEEPER_BACKUP_PRIVATE_KEY }}
+          KEEPER_TWAP_RECORDER: ${{ secrets.KEEPER_TWAP_RECORDER }}
+          KEEPER_MULTICALL3: ${{ secrets.KEEPER_MULTICALL3 }}
+          KEEPER_COLLATERAL_POLICY: ${{ secrets.KEEPER_COLLATERAL_POLICY }}
+          KEEPER_POOL_MANAGER: ${{ secrets.KEEPER_POOL_MANAGER }}
+          KEEPER_LOG_START_BLOCK: ${{ secrets.KEEPER_LOG_START_BLOCK }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
