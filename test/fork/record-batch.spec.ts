@@ -40,6 +40,9 @@ describe('recordBatch Anvil fork', () => {
       try { await client.getBlockNumber(); break; } catch { await new Promise((resolve) => setTimeout(resolve, 500)); }
       if (attempt === 29) throw new Error('Anvil did not start');
     }
+    const source = JSON.parse(await readFile('contracts/source.json', 'utf8')) as { commit: string };
+    const { stdout } = await execute('git', ['rev-parse', 'HEAD'], { cwd: contracts });
+    expect(stdout.trim()).toBe(source.commit);
     await execute('forge', ['build'], { cwd: contracts });
     const artifact = JSON.parse(await readFile(`${contracts}/out/TwapRecorder.sol/TwapRecorder.json`, 'utf8')) as { abi: Abi; bytecode: { object: Hex } };
     const wallet = createWalletClient({ account: privateKeyToAccount(anvilKey), chain, transport: http(anvilUrl) });
