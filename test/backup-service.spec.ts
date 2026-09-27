@@ -25,4 +25,13 @@ describe('BackupKeeperService', () => {
     await new BackupKeeperService(deps.pools, deps.recorder, deps.alerts).run({ dryRun: false });
     expect(deps.recorder.submitBatch).not.toHaveBeenCalled();
   });
+
+  it('prints a backup dry run without sending a transaction or alert', async () => {
+    const deps = dependencies([stalePool]);
+    const result = await new BackupKeeperService(deps.pools, deps.recorder, deps.alerts).run({ dryRun: true });
+    expect(result).toEqual(expect.objectContaining({ dryRun: true, poolCount: 1 }));
+    expect(deps.recorder.submitBatch).not.toHaveBeenCalled();
+    expect(deps.recorder.waitForReceipt).not.toHaveBeenCalled();
+    expect(deps.alerts.send).not.toHaveBeenCalled();
+  });
 });

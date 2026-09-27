@@ -51,7 +51,7 @@ export class ViemRecorder implements Recorder {
   }
 
   async waitForReceipt(hash: string): Promise<Receipt> {
-    const receipt = await this.publicClient.waitForTransactionReceipt({ hash: hash as Hex, timeout: 180_000 });
+    const receipt = await retryWithBackoff(() => this.publicClient.waitForTransactionReceipt({ hash: hash as Hex, timeout: 60_000 }));
     if (receipt.status !== 'success') throw new Error(`recordBatch reverted: ${hash}`);
     return { hash, gasUsed: receipt.gasUsed, gasPrice: receipt.effectiveGasPrice };
   }

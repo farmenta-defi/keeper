@@ -60,6 +60,12 @@ describe('recordBatch Anvil fork', () => {
     const store: PrimaryStore = { saveRun: vi.fn(), dailyTotals: vi.fn().mockResolvedValue({ costUsd: 0, budgetUsd: 1 }), claimAlert: vi.fn().mockResolvedValue(false), releaseAlert: vi.fn(), heartbeat: vi.fn() };
     const alerts: AlertSink = { send: vi.fn() };
     const service = new PrimaryKeeperService(indexer, recorder, store, alerts, 2_400);
+    const account = privateKeyToAccount(anvilKey).address;
+    const nonceBefore = await client.getTransactionCount({ address: account });
+    const dryRun = await service.run({ dryRun: true });
+    expect(dryRun).toEqual(expect.objectContaining({ dryRun: true, poolCount: 5 }));
+    expect(await client.getTransactionCount({ address: account })).toBe(nonceBefore);
+    expect(await onChain.observationCounts(keys.map((key) => key.id))).toEqual([0, 0, 0, 0, 0]);
     await service.run({ dryRun: false });
     for (let cycle = 0; cycle < 6; cycle += 1) {
       await client.request({ method: 'evm_increaseTime', params: [300] } as never);
