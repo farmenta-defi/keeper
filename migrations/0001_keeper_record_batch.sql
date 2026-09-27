@@ -1,6 +1,14 @@
 -- Also created by the backend repository's 0000 migration, with the same definition, so either
 -- repository may be migrated first on a fresh database.
-create schema if not exists backend;
+-- Not `create schema if not exists`: that checks CREATE on the database before it looks for the
+-- schema, and on the VPS the schema owner does not have that privilege.
+do $$
+begin
+  if not exists (select 1 from pg_namespace where nspname = 'backend') then
+    create schema backend;
+  end if;
+end
+$$;
 
 create table if not exists backend.service_heartbeat (
   service text primary key,
