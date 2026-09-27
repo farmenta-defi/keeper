@@ -26,5 +26,6 @@ export function backupConfig() {
     recorder: address('KEEPER_TWAP_RECORDER'), multicall3: address('KEEPER_MULTICALL3'), collateralPolicy: address('KEEPER_COLLATERAL_POLICY'),
     poolManager: address('KEEPER_POOL_MANAGER'), telegramToken: required('TELEGRAM_BOT_TOKEN'), telegramChatId: required('TELEGRAM_CHAT_ID'),
     logStartBlock: BigInt(required('KEEPER_LOG_START_BLOCK')),
+    poolManagerStartBlock: BigInt(required('KEEPER_POOL_MANAGER_START_BLOCK')),
   };
 }
