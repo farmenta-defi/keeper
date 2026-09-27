@@ -11,7 +11,12 @@ export interface PositionState {
   rampEndsAt: number;
 }
 
-export interface SwapRoute { calldata: `0x${string}`; expectedProfit: bigint }
+export interface SwapRoute {
+  calldata: `0x${string}`;
+  expectedProfit: bigint;
+  /** Includes any non-USDG retained-fee purchase exposed by a preliminary helper simulation. */
+  requiredRepayAmount?: bigint;
+}
 
 export interface TransactionPlan {
   candidate: Candidate;
