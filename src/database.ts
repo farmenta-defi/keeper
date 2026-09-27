@@ -14,7 +14,7 @@ export class PostgresPrimaryStore implements PrimaryStore {
 
   async dailyTotals() {
     const result = await this.pool.query<{ cost: string; budget: string }>(
-      "select coalesce(sum(gas_cost_usd), 0) as cost, coalesce(sum(budget_usd), 0) as budget from backend.keeper_record_batch_run where ran_at >= date_trunc('day', now() at time zone 'utc')",
+      "select coalesce(sum(gas_cost_usd), 0) as cost, coalesce(sum(budget_usd), 0) as budget from backend.keeper_record_batch_run where ran_at >= date_trunc('day', now() at time zone 'utc') at time zone 'utc'",
     );
     return { costUsd: Number(result.rows[0].cost), budgetUsd: Number(result.rows[0].budget) };
   }

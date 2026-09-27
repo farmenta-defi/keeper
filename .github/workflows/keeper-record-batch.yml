@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: keeper-record-batch-backup
+  cancel-in-progress: false
+
 jobs:
   record:
     runs-on: ubuntu-latest
