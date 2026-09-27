@@ -1,0 +1,26 @@
+{
+  "name": "@farmenta/keeper",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "keeper:primary": "bun run src/run-primary.ts",
+    "keeper:backup": "bun run src/run-backup.ts",
+    "db:migrate": "bun run scripts/migrate.ts",
+    "lint": "oxlint --type-aware src/ test/",
+    "test": "vitest run",
+    "test:fork": "vitest run --config vitest.fork.config.ts",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pg": "^8.23.0",
+    "viem": "^2.56.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1",
+    "oxlint": "^1.58.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  }
+}
