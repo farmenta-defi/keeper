@@ -11,10 +11,14 @@ wallet credentials are not available to API workflows. The source of truth is
   `debtOf` using Multicall3, sends one `recordBatch`, persists cost, and updates the primary
   heartbeat.
 - The GitHub Actions backup runs independently every five minutes. It has only paid-RPC and its
-  own hot wallet. It rebuilds meme pool keys from `PoolListed` and `Initialize` logs, reads
-  `Recorded` logs, and batches every listed meme pool whose latest observation is over 420
-  seconds old. It never accesses Ponder or PostgreSQL. A submitted backup transaction sends a
-  Telegram alert immediately.
+  own hot wallet. It finds meme pools from `PoolListed` logs (from `KEEPER_LOG_START_BLOCK`),
+  their keys from `Initialize` logs filtered to those pool ids (from
+  `KEEPER_POOL_MANAGER_START_BLOCK`, since a listed pool may predate the policy), and the latest
+  observation from `Recorded` logs filtered to those ids over only the last 900 seconds of blocks.
+  Reading the whole `Recorded` history would exceed the RPC's per-response log cap within about a
+  week. It batches every listed meme pool whose latest observation is over 420 seconds old, or
+  absent from that window. It never accesses Ponder or PostgreSQL. A submitted backup transaction
+  sends a Telegram alert immediately, and so does a failed backup run.
 
 The schedulers intentionally do not coordinate a database slot. `recordBatch` ignores an
 observation already made at the same timestamp; the 420-second backup threshold makes duplicate
@@ -28,13 +32,20 @@ process and must target the shared `farmenta` database. The backup GitHub workfl
 only its listed `KEEPER_BACKUP_*` and Telegram secrets; it must not receive `DATABASE_URL` or an
 indexer URL.
 
-The backend foundation migration must have created `backend` and `backend.service_heartbeat`
-before this service is deployed. Apply keeper migrations through the recorded runner:
+Keeper migrations create the `backend` schema and `backend.service_heartbeat` if the backend
+repository has not yet done so (with the same definition), and record their history in
+`backend.keeper_migrations`, separate from the backend's. Run them with the schema owner's
+connection string, then provision the keeper's own least-privilege role as a superuser:
 
 ```sh
 bun install --frozen-lockfile
-bun run db:migrate
+DATABASE_URL=<schema owner URL> bun run db:migrate
+psql -U postgres -d farmenta -f scripts/create-db-role.sql
+psql -U postgres -c '\password farmenta_keeper'
 ```
+
+Every indexer, Telegram, and database call has a timeout, so a hung dependency cannot keep the
+cron's `flock` held past the next run.
 
 Run a dry run without broadcasting:
 
@@ -49,4 +60,11 @@ bun run keeper:backup --dry-run
 bun run lint
 bun run test
 bun run build
+```
+
+CI runs these three on every pull request. The Anvil fork test is manual, because it needs a paid
+RPC and a checkout of the pinned smart-contract commit (`contracts/source.json`):
+
+```sh
+FORK_RPC_URL=<paid RPC> SMART_CONTRACT_DIR=<smart-contract checkout at the pinned commit> bun run test:fork
 ```
