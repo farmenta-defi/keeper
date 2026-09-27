@@ -41,6 +41,19 @@ describe('PrimaryKeeperService', () => {
     expect(deps.alerts.send).toHaveBeenCalledWith(expect.stringContaining('exceeds'));
   });
 
+  it('alerts before stale mode when a selected pool is older than 600 seconds', async () => {
+    const deps = dependencies([pool(1, 601)], [0]);
+    await new PrimaryKeeperService(deps.indexer, deps.recorder, deps.store, deps.alerts, 2_400).run({ dryRun: false });
+    expect(deps.alerts.send).toHaveBeenCalledWith(expect.stringContaining('601s old'));
+  });
+
+  it('prints a dry run without broadcasting', async () => {
+    const deps = dependencies([pool(1)], [0]);
+    const result = await new PrimaryKeeperService(deps.indexer, deps.recorder, deps.store, deps.alerts, 2_400).run({ dryRun: true });
+    expect(result).toEqual(expect.objectContaining({ dryRun: true, poolCount: 1 }));
+    expect(deps.recorder.submitBatch).not.toHaveBeenCalled();
+  });
+
   it('does not read candidates or submit a transaction when the indexer is stale', async () => {
     const deps = dependencies([pool(1)], [0]);
     vi.mocked(deps.indexer.assertFresh).mockRejectedValue(new Error('Indexer is too far behind'));
