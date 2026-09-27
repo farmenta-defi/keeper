@@ -1,3 +1,13 @@
+-- Also created by the backend repository's 0000 migration, with the same definition, so either
+-- repository may be migrated first on a fresh database.
+create schema if not exists backend;
+
+create table if not exists backend.service_heartbeat (
+  service text primary key,
+  observed_at timestamptz not null default now(),
+  details jsonb not null default '{}'::jsonb
+);
+
 create table if not exists backend.keeper_record_batch_run (
   id bigserial primary key,
   ran_at timestamptz not null,

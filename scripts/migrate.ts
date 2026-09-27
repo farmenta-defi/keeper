@@ -10,14 +10,17 @@ if (new URL(databaseUrl).pathname !== '/farmenta') {
 
 const client = new Client({ connectionString: databaseUrl });
 await client.connect();
-await client.query('create table if not exists backend.backend_migrations (name text primary key, applied_at timestamptz not null default now())');
+// Own history table: the backend repository records its migrations in backend_migrations by
+// file name, and sharing it would let a same-named file in either repository skip the other.
+await client.query('create schema if not exists backend');
+await client.query('create table if not exists backend.keeper_migrations (name text primary key, applied_at timestamptz not null default now())');
 for (const name of (await readdir('migrations')).filter((file) => file.endsWith('.sql')).sort()) {
-  const applied = await client.query('select 1 from backend.backend_migrations where name = $1', [name]);
+  const applied = await client.query('select 1 from backend.keeper_migrations where name = $1', [name]);
   if (applied.rowCount) continue;
   await client.query('begin');
   try {
     await client.query(await readFile(join('migrations', name), 'utf8'));
-    await client.query('insert into backend.backend_migrations (name) values ($1)', [name]);
+    await client.query('insert into backend.keeper_migrations (name) values ($1)', [name]);
     await client.query('commit');
   } catch (error) {
     await client.query('rollback');
