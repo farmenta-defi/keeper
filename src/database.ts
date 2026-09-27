@@ -3,7 +3,12 @@ import type { PrimaryStore } from './types.js';
 
 export class PostgresPrimaryStore implements PrimaryStore {
   private readonly pool: Pool;
-  constructor(databaseUrl: string) { this.pool = new Pool({ connectionString: databaseUrl }); }
+  constructor(databaseUrl: string) {
+    // Bounded so a stuck database cannot hold the cron's flock past the next five-minute run.
+    this.pool = new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 5_000, query_timeout: 10_000 });
+  }
+
+  async close() { await this.pool.end(); }
 
   async saveRun(run: { ranAt: number; poolCount: number; gasUsed: bigint; gasCostUsd: number; budgetUsd: number; transactionHash: string }) {
     await this.pool.query(
