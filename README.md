@@ -21,9 +21,9 @@ chmod 600 .env
 ```
 
 `KEEPER_MARKETS_JSON` contains the deployed market, lens, helper, and policy addresses. The
-route endpoint is intentionally a narrow internal service: `POST /v4-quote` must query
+route endpoint is intentionally a narrow authenticated service: `POST /v4-quote` must query
 `V4Quoter`, construct complete UniversalRouter calldata (including fee-purchase legs), retain
-its `minOut`, and return `expectedProfit` and an optional `requiredRepayAmount`. The latter lets
+its `minOut`, and return `expectedProfit`, an HMAC `signature`, and an optional `requiredRepayAmount`. The latter lets
 the route service increase the close-factor repayment after a preliminary helper simulation
 reports `FeePurchaseUnderfunded`; the same amount is never retried.
 

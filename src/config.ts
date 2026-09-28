@@ -20,6 +20,7 @@ export interface LiquidatorConfig {
   maxIndexerLagSeconds: number;
   rpcCostPath: string;
   routeApiUrl: string;
+  routeApiHmacSecret: string;
   markets: MarketAddresses[];
   treasury: Address;
   pollIntervalMs: number;
@@ -39,6 +40,7 @@ export function liquidatorConfig(argv = process.argv): LiquidatorConfig {
     maxIndexerLagSeconds: positiveInteger('KEEPER_MAX_INDEXER_LAG_SECONDS', 60),
     rpcCostPath: process.env.KEEPER_RPC_COST_PATH ?? './rpc-cost.json',
     routeApiUrl: required('KEEPER_ROUTE_API_URL').replace(/\/$/, ''),
+    routeApiHmacSecret: required('KEEPER_ROUTE_API_HMAC_SECRET'),
     markets,
     treasury: required('KEEPER_TREASURY') as Address,
     pollIntervalMs: positiveInteger('KEEPER_POLL_INTERVAL_MS', 2_000),

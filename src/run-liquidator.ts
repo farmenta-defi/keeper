@@ -15,7 +15,7 @@ const alerts: AlertSink = {
   },
 };
 const costs = new RpcCostLedger(config.rpcCostPath);
-const bot = new Liquidator(new IndexerSource(config.indexerUrl, config.markets.map((market) => market.market), config.maxIndexerLagSeconds, fetch, undefined, costs), new ViemChain(config.rpcUrl, config.privateKey, config.routeApiUrl, config.chainId, costs), alerts, config);
+const bot = new Liquidator(new IndexerSource(config.indexerUrl, config.markets.map((market) => market.market), config.maxIndexerLagSeconds, fetch, undefined, costs), new ViemChain(config.rpcUrl, config.privateKey, config.routeApiUrl, config.chainId, costs, config.routeApiHmacSecret), alerts, config);
 
 const runCycle = async (): Promise<void> => {
   try { await bot.cycle(); } catch (error) { console.error('liquidator cycle failed', error instanceof Error ? error.name : 'unknown error'); }

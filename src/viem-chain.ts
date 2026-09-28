@@ -1,5 +1,6 @@
 import { createPublicClient, createWalletClient, defineChain, http, parseAbi, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Address, Candidate, Chain, MarketAddresses, PositionState, SwapRoute } from './types.js';
 import type { RpcCostLedger } from './rpc-cost.js';
 
@@ -12,11 +13,11 @@ const policyAbi = parseAbi(['function listingOf(bytes32 poolId) view returns (bo
 const helperAbi = parseAbi(['function execute(uint256 tokenId, uint256 repayAmount, bytes swapCalldata)']);
 const erc20Abi = parseAbi(['function balanceOf(address) view returns (uint256)', 'function transfer(address,uint256) returns (bool)']);
 
-interface RouteResponse { calldata: Hex; expectedProfit: string; requiredRepayAmount?: string }
+interface RouteResponse { calldata: Hex; expectedProfit: string; requiredRepayAmount?: string; signature: string }
 
 /** The route API is deliberately narrow: it is the only component that speaks to V4Quoter. */
 class V4RouteApi {
-  constructor(private readonly url: string, private readonly fetcher: typeof fetch = fetch) {}
+  constructor(private readonly url: string, private readonly secret: string, private readonly fetcher: typeof fetch = fetch) {}
 
   async quote(candidate: Candidate, repayAmount: bigint): Promise<SwapRoute> {
     const response = await this.fetcher(`${this.url}/v4-quote`, {
@@ -27,6 +28,11 @@ class V4RouteApi {
     if (!response.ok) throw new Error(`V4Quoter route request failed: ${response.status}`);
     const route = await response.json() as RouteResponse;
     if (!route.calldata?.startsWith('0x')) throw new Error('V4Quoter route response lacks UniversalRouter calldata');
+    const payload = JSON.stringify({ calldata: route.calldata, expectedProfit: route.expectedProfit, requiredRepayAmount: route.requiredRepayAmount ?? null });
+    const expected = createHmac('sha256', this.secret).update(payload).digest('hex');
+    const actual = Buffer.from(route.signature ?? '', 'hex');
+    const wanted = Buffer.from(expected, 'hex');
+    if (actual.length !== wanted.length || !timingSafeEqual(actual, wanted)) throw new Error('V4Quoter route signature is invalid');
     return { calldata: route.calldata, expectedProfit: BigInt(route.expectedProfit), requiredRepayAmount: route.requiredRepayAmount === undefined ? undefined : BigInt(route.requiredRepayAmount) };
   }
 }
@@ -37,13 +43,13 @@ export class ViemChain implements Chain {
   private readonly walletClient;
   private readonly routes: V4RouteApi;
 
-  constructor(rpcUrl: string, privateKey: Hex, routeApiUrl: string, chainId: number, private readonly costs?: RpcCostLedger) {
+  constructor(rpcUrl: string, privateKey: Hex, routeApiUrl: string, chainId: number, private readonly costs?: RpcCostLedger, routeApiSecret = process.env.KEEPER_ROUTE_API_HMAC_SECRET ?? '') {
     this.account = privateKeyToAccount(privateKey);
     const transport = http(rpcUrl);
     const chain = defineChain({ id: chainId, name: 'Farmenta RPC', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
     this.publicClient = createPublicClient({ chain, transport });
     this.walletClient = createWalletClient({ account: this.account, chain, transport });
-    this.routes = new V4RouteApi(routeApiUrl);
+    this.routes = new V4RouteApi(routeApiUrl, routeApiSecret);
   }
 
   async positions(market: MarketAddresses, candidates: Candidate[]): Promise<Map<bigint, PositionState>> {
