@@ -1,3 +1,4 @@
+import { IndexerError } from './errors.js';
 import type { Address, Candidate, CandidateSource, IndexerSource, KeeperCandidate, PoolId, PoolKey } from './types.js';
 
 const REQUEST_TIMEOUT_MS = 5_000;
@@ -71,7 +72,7 @@ interface ApiCandidate { market: Address; tokenId: string | number; poolId: Pool
 function asRows(body: unknown): ApiCandidate[] {
   if (Array.isArray(body)) return body as ApiCandidate[];
   if (body && typeof body === 'object' && 'data' in body && Array.isArray(body.data)) return body.data as ApiCandidate[];
-  throw new Error('loan response must be an array or { data: array }');
+  throw new IndexerError('loan response must be an array or { data: array }');
 }
 
 export class LiquidationIndexerSource implements CandidateSource {
@@ -79,13 +80,13 @@ export class LiquidationIndexerSource implements CandidateSource {
   async candidates(): Promise<Candidate[]> {
     await this.assertFresh();
     const memeResponse = await this.fetcher(`${this.baseUrl}/loans/keeper-candidates`, { signal: AbortSignal.timeout(5_000) });
-    if (!memeResponse.ok) throw new Error(`keeper candidates request failed: ${memeResponse.status}`);
+    if (!memeResponse.ok) throw new IndexerError(`keeper candidates request failed: ${memeResponse.status}`);
     const blueChipResponses = await Promise.all(this.markets.map(async (market) => {
       const response = await this.fetcher(`${this.baseUrl}/loans?status=in_custody&market=${market}`, { signal: AbortSignal.timeout(5_000) });
-      if (!response.ok) throw new Error(`market loan request failed: ${response.status}`); return asRows(await response.json());
+      if (!response.ok) throw new IndexerError(`market loan request failed: ${response.status}`); return asRows(await response.json());
     }));
     const poolsResponse = await this.fetcher(`${this.baseUrl}/pools`, { signal: AbortSignal.timeout(5_000) });
-    if (!poolsResponse.ok) throw new Error(`pool request failed: ${poolsResponse.status}`);
+    if (!poolsResponse.ok) throw new IndexerError(`pool request failed: ${poolsResponse.status}`);
     const poolRows = asPoolRows(await poolsResponse.json());
     const pools = new Map(poolRows.filter((row) => row.currency0 && row.currency1 && row.hooks && row.fee !== undefined && row.tickSpacing !== undefined).map((row) => [row.id.toLowerCase(), {
       id: row.id as `0x${string}`, currency0: row.currency0 as Address, currency1: row.currency1 as Address, fee: row.fee!, tickSpacing: row.tickSpacing!, hooks: row.hooks as Address, observationAgeSeconds: row.observationAgeSeconds === undefined ? null : Number(row.observationAgeSeconds),
@@ -97,13 +98,13 @@ export class LiquidationIndexerSource implements CandidateSource {
   }
   private async assertFresh(): Promise<void> {
     const response = await this.fetcher(`${this.baseUrl}/status`, { signal: AbortSignal.timeout(5_000) });
-    if (!response.ok) throw new Error(`indexer status request failed: ${response.status}`);
+    if (!response.ok) throw new IndexerError(`indexer status request failed: ${response.status}`);
     const body = await response.json() as { lagSeconds?: number; block?: { timestamp?: number | string }; robinhood?: { block?: { timestamp?: number | string } } };
     const timestamp = body.lagSeconds === undefined ? Number(body.robinhood?.block?.timestamp ?? body.block?.timestamp) : this.now() - Number(body.lagSeconds);
     const lag = body.lagSeconds ?? (Number.isFinite(timestamp) ? this.now() - timestamp : Number.POSITIVE_INFINITY);
-    if (!Number.isFinite(lag) || lag > this.maxLagSeconds) throw new Error('indexer is stale; refusing to trust candidate enumeration');
+    if (!Number.isFinite(lag) || lag > this.maxLagSeconds) throw new IndexerError('indexer is stale; refusing to trust candidate enumeration');
   }
 }
 
 interface ApiPool { id: string; currency0?: string | null; currency1?: string | null; fee?: number | null; tickSpacing?: number | null; hooks?: string | null; observationAgeSeconds?: number | string | null }
-function asPoolRows(body: unknown): ApiPool[] { if (Array.isArray(body)) return body as ApiPool[]; throw new Error('pool response must be an array'); }
+function asPoolRows(body: unknown): ApiPool[] { if (Array.isArray(body)) return body as ApiPool[]; throw new IndexerError('pool response must be an array'); }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PonderIndexerSource } from '../src/indexer-source.js';
+import { IndexerError } from '../src/errors.js';
+import { LiquidationIndexerSource, PonderIndexerSource } from '../src/indexer-source.js';
 import { PrimaryKeeperService } from '../src/primary-service.js';
 import type { AlertSink, PrimaryStore, Recorder } from '../src/types.js';
 
@@ -85,5 +86,51 @@ describe('PonderIndexerSource', () => {
 
     await expect(service.run({ dryRun: false })).resolves.toMatchObject({ poolCount: 1, transactionHash: '0xtx' });
     expect(recorder.submitBatch).toHaveBeenCalledWith([expect.objectContaining({ id: MEME_POOL, fee: 460, tickSpacing: 9 })]);
+  });
+});
+
+describe('LiquidationIndexerSource', () => {
+  const BLUE_CHIP_MARKET = '0x00000000000000000000000000000000000000cc';
+  const blueChipRow = (tokenId: string, everBorrowed: boolean) => ({ ...candidateRow(tokenId, BLUE_CHIP_POOL), market: BLUE_CHIP_MARKET, everBorrowed, tier: 1 });
+
+  // `fetch` as the process passes it: the route is a full URL string, query included.
+  function served(routes: Record<string, unknown>, statuses: Record<string, number> = {}) {
+    return vi.fn(async (input: string) => {
+      const url = new URL(input);
+      const route = `${url.pathname}${url.search}`;
+      if (!(route in routes)) return new Response('not found', { status: 404 });
+      return new Response(JSON.stringify(routes[route]), { status: statuses[route] ?? 200 });
+    }) as unknown as typeof fetch;
+  }
+  const routes = {
+    '/status': status(NOW - 5),
+    '/loans/keeper-candidates': [candidateRow('1', MEME_POOL)],
+    [`/loans?status=in_custody&market=${MARKET}`]: [candidateRow('1', MEME_POOL)],
+    [`/loans?status=in_custody&market=${BLUE_CHIP_MARKET}`]: [blueChipRow('2', true), blueChipRow('3', false)],
+    '/pools': [poolRow(MEME_POOL, 2, true, '300'), poolRow(BLUE_CHIP_POOL, 1, true, null), poolRow(UNINITIALIZED_POOL, 2, false, null)],
+  };
+  const source = (fetcher: typeof fetch) => new LiquidationIndexerSource('http://indexer.local', [MARKET, BLUE_CHIP_MARKET], 60, fetcher, () => NOW);
+
+  it('lists the loans of every market once, with the key of their pool, and leaves out the never borrowed', async () => {
+    await expect(source(served(routes)).candidates()).resolves.toEqual([
+      { market: MARKET, tokenId: 1n, poolId: MEME_POOL, tier: 2, poolKey: expect.objectContaining({ id: MEME_POOL, currency1: '0x5fc5360d0400a0fd4f2af552add042d716f1d168', fee: 460, tickSpacing: 9 }) },
+      { market: BLUE_CHIP_MARKET, tokenId: 2n, poolId: BLUE_CHIP_POOL, tier: 1, poolKey: expect.objectContaining({ id: BLUE_CHIP_POOL }) },
+    ]);
+  });
+
+  it('gives a loan no pool key while its pool has none', async () => {
+    const uninitialized = { ...routes, '/loans/keeper-candidates': [candidateRow('4', UNINITIALIZED_POOL)], [`/loans?status=in_custody&market=${MARKET}`]: [] };
+    const [loan] = await source(served(uninitialized)).candidates();
+    expect(loan).toMatchObject({ tokenId: 4n, poolKey: undefined });
+  });
+
+  it('refuses a lagging indexer, a missing status and a failing route, as IndexerError', async () => {
+    const stale = await source(served({ ...routes, '/status': status(NOW - 61) })).candidates().catch((error: unknown) => error);
+    expect(stale).toBeInstanceOf(IndexerError);
+    expect((stale as Error).message).toBe('indexer is stale; refusing to trust candidate enumeration');
+    await expect(source(served({ ...routes, '/status': {} })).candidates()).rejects.toBeInstanceOf(IndexerError);
+    const failing = await source(served(routes, { '/pools': 503 })).candidates().catch((error: unknown) => error);
+    expect(failing).toBeInstanceOf(IndexerError);
+    expect((failing as Error).message).toBe('pool request failed: 503');
   });
 });

@@ -1,11 +1,12 @@
-import type { AlertSink, Candidate, CandidateSource, Chain, MarketAddresses, PositionState, TransactionPlan } from './types.js';
-import { decodeErrorResult, parseAbi } from 'viem';
-
-const liquidationErrors = parseAbi(['error FeePurchaseUnderfunded(uint256 required,uint256 available)', 'error PositionIsHealthy(uint256 tokenId,uint256 healthFactor)', 'error SwapFailed(bytes reason)']);
+import { IndexerError, RouteUnavailableError } from './errors.js';
+import { describeRevert, revertOf } from './revert.js';
+import type { AlertSink, Candidate, CandidateSource, Chain, MarketAddresses, PositionState, SwapRoute, TransactionPlan } from './types.js';
 
 const WAD = 10n ** 18n;
 const BPS = 10_000n;
 const RAMP_GRACE_SECONDS = 60;
+
+interface Prepared { route: SwapRoute; repayAmount: bigint; gas: bigint }
 
 export interface LiquidatorOptions {
   markets: MarketAddresses[];
@@ -75,9 +76,11 @@ export class Liquidator {
         await this.alert(`positions:${key(candidate)}`, `position view failed for candidate ${candidate.tokenId}`);
         continue;
       }
-      if (!state || state.debt === 0n || state.healthFactor >= WAD) {
+      // A pool is recorded once per stale spell: the mark goes only when the pool reads fresh,
+      // not when some loan in it reads healthy, or a pool that stays stale is recorded every cycle.
+      if (!state.stale) this.staleRecorded.delete(candidate.poolId);
+      if (state.debt === 0n || state.healthFactor >= WAD) {
         this.firstUnhealthyAt.delete(key(candidate));
-        this.staleRecorded.delete(candidate.poolId);
         this.staleEpisodes.delete(candidateKey(candidate));
         continue;
       }
@@ -104,23 +107,21 @@ export class Liquidator {
 
     if ((rampActive || this.staleEpisodes.has(candidateKey)) && persistedFor < RAMP_GRACE_SECONDS) return;
 
-    const closeFactorRepay = state.debt * BigInt(state.closeFactorBps) / BPS + (state.closeFactorBps === 10_000 ? state.debt / 100n : 0n);
-    if (closeFactorRepay === 0n) return;
+    const buffer = state.closeFactorBps === 10_000 ? state.debt / 100n : 0n;
+    const budget = state.debt * BigInt(state.closeFactorBps) / BPS + buffer;
+    if (budget === 0n) return;
     try {
-      let route = await this.chain.quote(market, candidate, closeFactorRepay);
-      let repayAmount = route.requiredRepayAmount === undefined || route.requiredRepayAmount < closeFactorRepay ? closeFactorRepay : route.requiredRepayAmount;
-      let gas: bigint;
+      let prepared: Prepared;
       try {
-        gas = await this.chain.simulate(market, candidate, repayAmount, route);
+        prepared = await this.prepare(market, candidate, budget);
       } catch (error) {
-        const required = feePurchaseRequired(error);
-        const maximumRepay = state.debt + (state.closeFactorBps === 10_000 ? state.debt / 100n : 0n);
-        const adjustedRepay = required === undefined ? undefined : repayAmount + required;
-        if (adjustedRepay === undefined || adjustedRepay <= repayAmount || adjustedRepay > maximumRepay) throw error;
-        route = await this.chain.quote(market, candidate, adjustedRepay);
-        repayAmount = route.requiredRepayAmount === undefined || route.requiredRepayAmount < adjustedRepay ? adjustedRepay : route.requiredRepayAmount;
-        gas = await this.chain.simulate(market, candidate, repayAmount, route);
+        // The sizing simulation and the final eth_call both surface FeePurchaseUnderfunded, so
+        // both sit inside this block (spec §8): the same budget is never tried twice.
+        const raised = raisedBudget(error, budget, state.debt + buffer);
+        if (raised === undefined) throw error;
+        prepared = await this.prepare(market, candidate, raised);
       }
+      const { route, repayAmount, gas } = prepared;
       const gasPrice = await this.chain.gasPrice();
       const plan: TransactionPlan = { candidate, repayAmount, route, gas: gas * 120n / 100n, gasPrice };
       const gasCostUsdg = plan.gas * plan.gasPrice * BigInt(Math.round((this.options.ethUsd ?? 2400) * 1_000_000)) / 1_000_000_000_000_000_000n;
@@ -143,6 +144,12 @@ export class Liquidator {
     }
   }
 
+  private async prepare(market: MarketAddresses, candidate: Candidate, budget: bigint): Promise<Prepared> {
+    const route = await this.chain.quote(market, candidate, budget);
+    const repayAmount = route.requiredRepayAmount !== undefined && route.requiredRepayAmount > budget ? route.requiredRepayAmount : budget;
+    return { route, repayAmount, gas: await this.chain.simulate(market, candidate, repayAmount, route) };
+  }
+
   private async alert(subject: string, text: string): Promise<void> {
     const now = (this.options.now ?? unixNow)();
     if ((this.lastAlertAt.get(subject) ?? 0) + 600 > now) return;
@@ -158,59 +165,22 @@ function chunks<T>(items: T[], size: number): T[][] {
 function key(candidate: Candidate): string { return `${candidate.market}:${candidate.tokenId}`; }
 function candidateKey(candidate: Candidate): string { return key(candidate); }
 function unixNow(): number { return Math.floor(Date.now() / 1_000); }
+/** Contract error names and this repository's own messages only: a provider error can carry the RPC URL. */
 function safeReason(error: unknown): string {
-  const reason = error instanceof Error ? error.message : String(error);
-  const decoded = errorName(error);
-  if (decoded === 'PositionIsHealthy') return 'position was already healthy';
-  if (decoded === 'FeePurchaseUnderfunded') return 'fee purchase was underfunded';
-  if (/FeePurchaseUnderfunded/.test(reason)) return 'fee purchase was underfunded';
-  if (/PositionIsHealthy/.test(reason)) return 'position was already healthy';
+  const revert = revertOf(error);
+  if (revert) return `contract reverted with ${describeRevert(revert)}`;
+  if (error instanceof IndexerError || error instanceof RouteUnavailableError) return error.message;
   return 'simulation or execution failed';
 }
 
-function errorName(error: unknown): string | undefined {
-  const pending: unknown[] = [error];
-  const seen = new Set<object>();
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current || typeof current !== 'object' || seen.has(current)) continue;
-    seen.add(current);
-    const value = current as Record<string, unknown>;
-    if (typeof value.errorName === 'string') return value.errorName;
-    for (const key of ['cause', 'data', 'originalError']) if (value[key] && typeof value[key] === 'object') pending.push(value[key]);
-  }
-  return undefined;
-}
-
-function feePurchaseRequired(error: unknown): bigint | undefined {
-  const data = errorData(error);
-  if (data) {
-    try {
-      const decoded = decodeErrorResult({ abi: liquidationErrors, data });
-      if (decoded.errorName === 'FeePurchaseUnderfunded') return decoded.args[0];
-    } catch { /* fall through to legacy message parsing */ }
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  const match = message.match(/FeePurchaseUnderfunded\(\s*(\d+)\s*,/i) ?? message.match(/required(?:RepayAmount)?[=: ]+(\d+)/i);
-  return match?.[1] === undefined ? undefined : BigInt(match[1]);
-}
-
-function errorData(error: unknown): `0x${string}` | undefined {
-  const pending: unknown[] = [error];
-  const seen = new Set<object>();
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current || typeof current !== 'object' || seen.has(current)) continue;
-    seen.add(current);
-    const value = current as Record<string, unknown>;
-    for (const key of ['data', 'raw', 'originalError']) {
-      const candidate = value[key];
-      if (typeof candidate === 'string' && candidate.startsWith('0x')) return candidate as `0x${string}`;
-      if (candidate && typeof candidate === 'object') pending.push(candidate);
-    }
-    for (const key of ['cause', 'shortMessage']) if (value[key] && typeof value[key] === 'object') pending.push(value[key]);
-  }
-  return undefined;
+/** `repay + required`: what the market asked for on top of the repayment, capped at the debt (spec §8). */
+function raisedBudget(error: unknown, budget: bigint, maximum: bigint): bigint | undefined {
+  const revert = revertOf(error);
+  if (revert?.errorName !== 'FeePurchaseUnderfunded') return undefined;
+  const [required, available] = revert.args as [bigint, bigint];
+  const raised = budget - available + required;
+  const capped = raised > maximum ? maximum : raised;
+  return capped > budget ? capped : undefined;
 }
 
 function serializePlan(plan: TransactionPlan) {

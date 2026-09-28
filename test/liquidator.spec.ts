@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { encodeErrorResult, parseAbi } from 'viem';
+import { helperAbi, liquidationErrorsAbi } from '../src/contract-abi.js';
+import { IndexerError, RouteUnavailableError } from '../src/errors.js';
 import { Liquidator } from '../src/liquidator.js';
+import { SimulationRevertedError } from '../src/revert.js';
 import type { AlertSink, Candidate, Chain, MarketAddresses, PositionState } from '../src/types.js';
 
 const market: MarketAddresses = {
@@ -156,5 +160,147 @@ describe('Liquidator', () => {
     now += 60;
     await bot.cycle();
     expect(chain.submit).toHaveBeenCalledOnce();
+  });
+
+  it('waits out the 60 seconds of a stale spell even after its own record made the pool fresh', async () => {
+    const poolKey = { id: candidate.poolId, currency0: market.market, currency1: market.lens, fee: 500, tickSpacing: 10, hooks: market.helper, observationAgeSeconds: null };
+    const { chain, alerts } = harness();
+    vi.mocked(chain.positions).mockResolvedValueOnce(new Map([[candidate.tokenId, { ...unhealthy, stale: true }]])).mockResolvedValue(new Map([[candidate.tokenId, { ...unhealthy, stale: false }]]));
+    let now = 1_000;
+    const bot = new Liquidator({ candidates: async () => [{ ...candidate, poolKey }] }, chain, alerts, { markets: [market], treasury: market.market, maxCallBatch: 100, minGasBalance: 1n, dryRun: false, now: () => now });
+    await bot.cycle();
+    now += 2;
+    await bot.cycle();
+    expect(chain.submit).not.toHaveBeenCalled();
+    now += 58;
+    await bot.cycle();
+    expect(chain.submit).toHaveBeenCalledOnce();
+    expect(chain.recordPool).toHaveBeenCalledOnce();
+  });
+
+  it('records a pool once per stale spell, whatever the other loans of the pool read', async () => {
+    const poolKey = { id: candidate.poolId, currency0: market.market, currency1: market.lens, fee: 500, tickSpacing: 10, hooks: market.helper, observationAgeSeconds: null };
+    const healthyLoan = { ...candidate, tokenId: 6n, poolKey };
+    const unhealthyLoan = { ...candidate, poolKey };
+    const { chain, alerts } = harness();
+    const stale = (spell: boolean) => new Map([[6n, { ...unhealthy, healthFactor: 2n * 10n ** 18n, stale: spell }], [7n, { ...unhealthy, stale: spell }]]);
+    // Under 30 minutes of history: `consult` keeps reverting after the record.
+    vi.mocked(chain.positions).mockResolvedValue(stale(true));
+    vi.mocked(chain.quote).mockResolvedValue({ calldata: '0x' as const, expectedProfit: 0n });
+    let now = 1_000;
+    const bot = new Liquidator({ candidates: async () => [healthyLoan, unhealthyLoan] }, chain, alerts, { markets: [market], treasury: market.market, maxCallBatch: 100, minGasBalance: 1n, dryRun: false, now: () => now });
+    for (let cycle = 0; cycle < 30; cycle += 1) { await bot.cycle(); now += 2; }
+    expect(chain.recordPool).toHaveBeenCalledOnce();
+
+    vi.mocked(chain.positions).mockResolvedValueOnce(stale(false)).mockResolvedValue(stale(true));
+    await bot.cycle();
+    now += 86_400;
+    await bot.cycle();
+    expect(chain.recordPool).toHaveBeenCalledTimes(2);
+  });
+
+  it('compares the profit with the gas in USDG', async () => {
+    // 600,000 gas at 0.02 gwei is 1.2e13 wei: $0.0288 at 2,400 USD per ETH, 28,800 units of USDG.
+    const priced = (expectedProfit: bigint) => {
+      const { chain, alerts } = harness();
+      vi.mocked(chain.quote).mockResolvedValue({ calldata: '0x1234' as const, expectedProfit });
+      vi.mocked(chain.simulate).mockResolvedValue(500_000n);
+      vi.mocked(chain.gasPrice).mockResolvedValue(20_000_000n);
+      const bot = new Liquidator({ candidates: async () => [candidate] }, chain, alerts, { markets: [market], treasury: market.market, maxCallBatch: 100, minGasBalance: 1n, dryRun: false, ethUsd: 2_400, now: () => 1_000 });
+      return { bot, chain };
+    };
+    const paying = priced(28_801n);
+    await paying.bot.cycle();
+    expect(paying.chain.submit).toHaveBeenCalledWith(market, candidate, 1_010_000n, expect.anything(), 600_000n, 20_000_000n);
+    const losing = priced(28_800n);
+    await losing.bot.cycle();
+    expect(losing.chain.submit).not.toHaveBeenCalled();
+  });
+
+  describe('FeePurchaseUnderfunded', () => {
+    const partial: PositionState = { ...unhealthy, debt: 1_000_000_000n, closeFactorBps: 5_000 };
+    // As the market reverts: `required` is the cost of the fee leg, `available` what the budget left for it.
+    const underfunded = (budget: bigint, repay = 500_000_000n, required = 150_000_000n) =>
+      new SimulationRevertedError(encodeErrorResult({ abi: liquidationErrorsAbi, errorName: 'FeePurchaseUnderfunded', args: [required, budget - repay] }));
+
+    it('raises the budget to repay + required when the sizing simulation reverts with it', async () => {
+      const { bot, chain } = harness(partial);
+      vi.mocked(chain.quote).mockImplementation(async (_market, _candidate, budget) => {
+        if (budget < 650_000_000n) throw underfunded(budget);
+        return { calldata: '0x1234' as const, expectedProfit: 1_000_000n };
+      });
+      await bot.cycle();
+      expect(vi.mocked(chain.quote).mock.calls.map((call) => call[2])).toEqual([500_000_000n, 650_000_000n]);
+      expect(chain.submit).toHaveBeenCalledWith(market, candidate, 650_000_000n, expect.anything(), 120n, 1n);
+    });
+
+    it('raises it as well when only the final eth_call reverts with it', async () => {
+      const { bot, chain } = harness(partial);
+      vi.mocked(chain.simulate).mockImplementation(async (_market, _candidate, budget) => {
+        if (budget < 650_000_000n) throw underfunded(budget);
+        return 100n;
+      });
+      await bot.cycle();
+      expect(vi.mocked(chain.simulate).mock.calls.map((call) => call[2])).toEqual([500_000_000n, 650_000_000n]);
+      expect(chain.submit).toHaveBeenCalledOnce();
+    });
+
+    it('counts what the budget already left for the fee leg', async () => {
+      const { bot, chain } = harness(partial);
+      // The market repays 480 of a 500 budget, so 20 of the 150 are funded: 130 more, not 150.
+      vi.mocked(chain.quote).mockImplementation(async (_market, _candidate, budget) => {
+        if (budget < 630_000_000n) throw underfunded(budget, 480_000_000n);
+        return { calldata: '0x1234' as const, expectedProfit: 1_000_000n };
+      });
+      await bot.cycle();
+      expect(vi.mocked(chain.quote).mock.calls.map((call) => call[2])).toEqual([500_000_000n, 630_000_000n]);
+    });
+
+    it('never asks for more than the debt, and never tries one budget twice in a cycle', async () => {
+      const { bot, chain } = harness(partial);
+      vi.mocked(chain.quote).mockImplementation(async (_market, _candidate, budget) => { throw underfunded(budget, 500_000_000n, 900_000_000n); });
+      await bot.cycle();
+      expect(vi.mocked(chain.quote).mock.calls.map((call) => call[2])).toEqual([500_000_000n, 1_000_000_000n]);
+      expect(chain.submit).not.toHaveBeenCalled();
+
+      const closing = harness({ ...partial, closeFactorBps: 10_000 });
+      vi.mocked(closing.chain.quote).mockImplementation(async (_market, _candidate, budget) => { throw underfunded(budget, 1_000_000_000n); });
+      await closing.bot.cycle();
+      expect(vi.mocked(closing.chain.quote).mock.calls.map((call) => call[2])).toEqual([1_010_000_000n]);
+    });
+  });
+
+  describe('alert text', () => {
+    const failing = async (error: unknown) => {
+      const { bot, chain, alerts } = harness();
+      vi.mocked(chain.quote).mockRejectedValue(error);
+      await bot.cycle();
+      await bot.cycle();
+      return vi.mocked(alerts.send).mock.calls.map((call) => call[0]);
+    };
+
+    it('names the contract error, and the router error inside SwapFailed', async () => {
+      const healthy = encodeErrorResult({ abi: liquidationErrorsAbi, errorName: 'PositionIsHealthy', args: [7n, 10n ** 18n] });
+      expect(await failing(new SimulationRevertedError(healthy))).toEqual(['liquidation 7 failed 2 times: contract reverted with PositionIsHealthy']);
+      const tooLittle = encodeErrorResult({ abi: parseAbi(['error V4TooLittleReceived(uint256,uint256)']), errorName: 'V4TooLittleReceived', args: [2n, 1n] });
+      const swapFailed = encodeErrorResult({ abi: helperAbi, errorName: 'SwapFailed', args: [tooLittle] });
+      expect(await failing(new SimulationRevertedError(swapFailed))).toEqual(['liquidation 7 failed 2 times: contract reverted with SwapFailed (V4TooLittleReceived)']);
+    });
+
+    it('says which route pool is missing', async () => {
+      expect(await failing(new RouteUnavailableError('full seizure of 7 needs a route pool other than its own 0xabc'))).toEqual(['liquidation 7 failed 2 times: full seizure of 7 needs a route pool other than its own 0xabc']);
+    });
+
+    it('says the indexer is stale, and keeps a provider error to itself', async () => {
+      const { chain, alerts } = harness();
+      const stale = new Liquidator({ candidates: async () => { throw new IndexerError('indexer is stale; refusing to trust candidate enumeration'); } }, chain, alerts, { markets: [market], treasury: market.market, maxCallBatch: 100, minGasBalance: 1n, dryRun: false, now: () => 1_000 });
+      await stale.cycle();
+      expect(alerts.send).toHaveBeenCalledWith('liquidator cycle failed: indexer is stale; refusing to trust candidate enumeration');
+
+      const provider = harness();
+      vi.mocked(provider.chain.gasBalance).mockRejectedValue(new Error('HTTP request failed. URL: https://paid-rpc.example/v2/secret-key'));
+      await provider.bot.cycle();
+      expect(provider.alerts.send).toHaveBeenCalledWith('liquidator cycle failed: simulation or execution failed');
+    });
   });
 });
