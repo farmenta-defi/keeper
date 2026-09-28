@@ -98,6 +98,13 @@ describe('Liquidator', () => {
     expect(chain.submit).not.toHaveBeenCalled();
   });
 
+  it('does not broadcast when the quoted minOut would revert', async () => {
+    const { bot, chain } = harness();
+    vi.mocked(chain.simulate).mockRejectedValue(new Error('V4TooLittleReceived'));
+    await bot.cycle();
+    expect(chain.submit).not.toHaveBeenCalled();
+  });
+
   it('deduplicates repeated failure alerts without disclosing provider errors', async () => {
     const { bot, chain, alerts } = harness();
     vi.mocked(chain.simulate).mockRejectedValue(new Error('https://paid-rpc.example failed'));
