@@ -78,11 +78,11 @@ function asRows(body: unknown): ApiCandidate[] {
 export class LiquidationIndexerSource implements CandidateSource {
   constructor(private readonly baseUrl: string, private readonly markets: Address[], private readonly maxLagSeconds = 60, private readonly fetcher: typeof fetch = fetch, private readonly now = () => Math.floor(Date.now() / 1_000), private readonly costs?: RpcCostLedger) {}
   async candidates(): Promise<Candidate[]> {
-    this.costs?.record(); await this.assertFresh();
+    await this.assertFresh();
     const memeResponse = await this.fetcher(`${this.baseUrl}/loans/keeper-candidates`, { signal: AbortSignal.timeout(5_000) });
     if (!memeResponse.ok) throw new Error(`keeper candidates request failed: ${memeResponse.status}`);
     const blueChipResponses = await Promise.all(this.markets.map(async (market) => {
-      this.costs?.record(); const response = await this.fetcher(`${this.baseUrl}/loans?status=in_custody&market=${market}`, { signal: AbortSignal.timeout(5_000) });
+      const response = await this.fetcher(`${this.baseUrl}/loans?status=in_custody&market=${market}`, { signal: AbortSignal.timeout(5_000) });
       if (!response.ok) throw new Error(`market loan request failed: ${response.status}`); return asRows(await response.json());
     }));
     const rows = [...asRows(await memeResponse.json()), ...blueChipResponses.flat()].filter((row) => row.everBorrowed !== false);
@@ -91,10 +91,10 @@ export class LiquidationIndexerSource implements CandidateSource {
     return [...candidates.values()];
   }
   private async assertFresh(): Promise<void> {
-    this.costs?.record(); const response = await this.fetcher(`${this.baseUrl}/status`, { signal: AbortSignal.timeout(5_000) });
+    const response = await this.fetcher(`${this.baseUrl}/status`, { signal: AbortSignal.timeout(5_000) });
     if (!response.ok) throw new Error(`indexer status request failed: ${response.status}`);
-    const body = await response.json() as { lagSeconds?: number; block?: { timestamp?: number | string } };
-    const timestamp = body.lagSeconds === undefined ? Number(body.block?.timestamp) : this.now() - Number(body.lagSeconds);
+    const body = await response.json() as { lagSeconds?: number; block?: { timestamp?: number | string }; robinhood?: { block?: { timestamp?: number | string } } };
+    const timestamp = body.lagSeconds === undefined ? Number(body.robinhood?.block?.timestamp ?? body.block?.timestamp) : this.now() - Number(body.lagSeconds);
     const lag = body.lagSeconds ?? (Number.isFinite(timestamp) ? this.now() - timestamp : Number.POSITIVE_INFINITY);
     if (!Number.isFinite(lag) || lag > this.maxLagSeconds) throw new Error('indexer is stale; refusing to trust candidate enumeration');
   }

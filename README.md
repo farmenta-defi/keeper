@@ -93,5 +93,7 @@ gas. The helper's `minOut` remains in calldata so adverse fills revert atomicall
 for positions first made unhealthy during an active LT ramp and sweeps profits to `KEEPER_TREASURY`.
 
 Run `bun run keeper:liquidate --dry-run` to simulate without broadcasting, or omit `--dry-run` to
-submit safe transactions. `KEEPER_MARKETS_JSON` contains deployed market, lens, helper, and policy
-addresses; route responses require the configured HMAC signature.
+submit safe transactions. Run this process under its own Unix user with its own `.env` and
+`KEEPER_LIQUIDATOR_PRIVATE_KEY`; the scheduler wallet must never be reused. `KEEPER_MARKETS_JSON`
+contains deployed market, lens, helper, and policy addresses; route responses require the configured
+HMAC signature.

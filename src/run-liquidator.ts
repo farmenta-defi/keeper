@@ -4,28 +4,20 @@ import { Liquidator } from './liquidator.js';
 import type { AlertSink } from './types.js';
 import { ViemChain } from './viem-chain.js';
 import { RpcCostLedger } from './rpc-cost.js';
+import { TelegramAlertSink } from './telegram.js';
 
 const config = liquidatorConfig();
-const alerts: AlertSink = {
-  async send(message) {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-    const chatId = process.env.TELEGRAM_CHAT_ID;
-    if (!token || !chatId) return console.error(message);
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: chatId, text: message }) });
-  },
-};
+const alerts: AlertSink = new TelegramAlertSink(process.env.TELEGRAM_BOT_TOKEN ?? (() => { throw new Error('TELEGRAM_BOT_TOKEN is required'); })(), process.env.TELEGRAM_CHAT_ID ?? (() => { throw new Error('TELEGRAM_CHAT_ID is required'); })());
 const costs = new RpcCostLedger(config.rpcCostPath);
-const bot = new Liquidator(new LiquidationIndexerSource(config.indexerUrl, config.markets.map((market) => market.market), config.maxIndexerLagSeconds, fetch, undefined, costs), new ViemChain(config.rpcUrl, config.privateKey, config.routeApiUrl, config.chainId, costs, config.routeApiHmacSecret), alerts, config);
+const bot = new Liquidator(new LiquidationIndexerSource(config.indexerUrl, config.markets.map((market) => market.market), config.maxIndexerLagSeconds, fetch, undefined, costs), new ViemChain(config.rpcUrl, config.privateKey, config.routeApiUrl, config.chainId, costs, config.routeApiHmacSecret, config.multicall3), alerts, config);
 
 const runCycle = async (): Promise<void> => {
-  try { await bot.cycle(); } catch (error) { console.error('liquidator cycle failed', error instanceof Error ? error.name : 'unknown error'); }
+  await bot.cycle();
 };
 await runCycle();
 if (!config.dryRun) {
-  const poll = async (): Promise<void> => {
+  while (true) {
     await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
     await runCycle();
-    await poll();
-  };
-  await poll();
+  }
 }

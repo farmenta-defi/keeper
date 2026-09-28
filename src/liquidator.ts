@@ -10,6 +10,7 @@ export interface LiquidatorOptions {
   maxCallBatch: number;
   minGasBalance: bigint;
   dryRun: boolean;
+  ethUsd?: number;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -36,6 +37,8 @@ export class Liquidator {
     this.running = true;
     try {
       await this.runCycle();
+    } catch (error) {
+      await this.alert('cycle-failure', `liquidator cycle failed: ${safeReason(error)}`);
     } finally {
       this.running = false;
     }
@@ -44,7 +47,6 @@ export class Liquidator {
   private async runCycle(): Promise<void> {
     if (await this.chain.gasBalance() < this.options.minGasBalance) {
       await this.alert('gas-balance', 'keeper liquidator gas balance is below its configured minimum');
-      return;
     }
 
     const candidates = await this.source.candidates();
@@ -55,7 +57,13 @@ export class Liquidator {
   }
 
   private async processBatch(market: MarketAddresses, candidates: Candidate[]): Promise<void> {
-    const states = await this.chain.positions(market, candidates);
+    let states: Map<bigint, PositionState>;
+    try {
+      states = await this.chain.positions(market, candidates);
+    } catch (error) {
+      await this.alert(`positions:${market.market}`, `position view batch failed: ${safeReason(error)}`);
+      return;
+    }
     for (const candidate of candidates) {
       const state = states.get(candidate.tokenId);
       if (!state || state.debt === 0n || state.healthFactor >= WAD) {
@@ -78,22 +86,33 @@ export class Liquidator {
 
     if (rampActive && persistedFor < RAMP_GRACE_SECONDS) return;
 
-    const closeFactorRepay = state.debt * BigInt(state.closeFactorBps) / BPS;
+    const closeFactorRepay = state.debt * BigInt(state.closeFactorBps) / BPS + (state.closeFactorBps === 10_000 ? state.debt / 100n : 0n);
     if (closeFactorRepay === 0n) return;
     try {
-      const route = await this.chain.quote(market, candidate, closeFactorRepay);
-      const repayAmount = route.requiredRepayAmount ?? closeFactorRepay;
-      const gas = await this.chain.simulate(market, candidate, repayAmount, route);
+      let route = await this.chain.quote(market, candidate, closeFactorRepay);
+      let repayAmount = route.requiredRepayAmount === undefined || route.requiredRepayAmount < closeFactorRepay ? closeFactorRepay : route.requiredRepayAmount;
+      let gas: bigint;
+      try {
+        gas = await this.chain.simulate(market, candidate, repayAmount, route);
+      } catch (error) {
+        const required = feePurchaseRequired(error);
+        if (required === undefined || required <= repayAmount || required > state.debt) throw error;
+        route = await this.chain.quote(market, candidate, required);
+        repayAmount = route.requiredRepayAmount ?? required;
+        gas = await this.chain.simulate(market, candidate, repayAmount, route);
+      }
       const gasPrice = await this.chain.gasPrice();
-      const plan: TransactionPlan = { candidate, repayAmount, route, gas, gasPrice };
-      if (plan.route.expectedProfit <= plan.gas * plan.gasPrice) return;
+      const plan: TransactionPlan = { candidate, repayAmount, route, gas: gas * 120n / 100n, gasPrice };
+      const gasCostUsdg = plan.gas * plan.gasPrice * BigInt(Math.round((this.options.ethUsd ?? 2400) * 1_000_000)) / 1_000_000_000_000n;
+      if (plan.route.expectedProfit <= gasCostUsdg) return;
       if (this.options.dryRun) {
         (this.options.log ?? console.log)(JSON.stringify(serializePlan(plan)));
         return;
       }
-      const transactionHash = await this.chain.submit(market, candidate, repayAmount, route, gas, gasPrice);
+      const transactionHash = await this.chain.submit(market, candidate, repayAmount, route, plan.gas, gasPrice);
       await this.chain.waitForReceipt(transactionHash);
-      await this.chain.sweep(market, this.options.treasury);
+      try { await this.chain.sweep(market, this.options.treasury); }
+      catch { await this.alert(`sweep:${candidateKey}`, `liquidation ${candidate.tokenId} succeeded but treasury sweep failed`); }
       this.firstUnhealthyAt.delete(candidateKey);
       this.failures.delete(candidateKey);
     } catch (error) {
@@ -123,6 +142,12 @@ function safeReason(error: unknown): string {
   if (/FeePurchaseUnderfunded/.test(reason)) return 'fee purchase was underfunded';
   if (/PositionIsHealthy/.test(reason)) return 'position was already healthy';
   return 'simulation or execution failed';
+}
+
+function feePurchaseRequired(error: unknown): bigint | undefined {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(/FeePurchaseUnderfunded\([^,]+,\s*(\d+)\)/i) ?? message.match(/required(?:RepayAmount)?[=: ]+(\d+)/i);
+  return match?.[1] === undefined ? undefined : BigInt(match[1]);
 }
 
 function serializePlan(plan: TransactionPlan) {

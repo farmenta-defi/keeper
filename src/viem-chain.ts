@@ -28,7 +28,8 @@ class V4RouteApi {
     if (!response.ok) throw new Error(`V4Quoter route request failed: ${response.status}`);
     const route = await response.json() as RouteResponse;
     if (!route.calldata?.startsWith('0x')) throw new Error('V4Quoter route response lacks UniversalRouter calldata');
-    const payload = JSON.stringify({ calldata: route.calldata, expectedProfit: route.expectedProfit, requiredRepayAmount: route.requiredRepayAmount ?? null });
+    const request = { market: candidate.market, tokenId: candidate.tokenId.toString(), poolId: candidate.poolId, repayAmount: repayAmount.toString() };
+    const payload = JSON.stringify({ ...request, calldata: route.calldata, expectedProfit: route.expectedProfit, requiredRepayAmount: route.requiredRepayAmount ?? null });
     const expected = createHmac('sha256', this.secret).update(payload).digest('hex');
     const actual = Buffer.from(route.signature ?? '', 'hex');
     const wanted = Buffer.from(expected, 'hex');
@@ -43,17 +44,16 @@ export class ViemChain implements Chain {
   private readonly walletClient;
   private readonly routes: V4RouteApi;
 
-  constructor(rpcUrl: string, privateKey: Hex, routeApiUrl: string, chainId: number, private readonly costs?: RpcCostLedger, routeApiSecret = process.env.KEEPER_ROUTE_API_HMAC_SECRET ?? '') {
+  constructor(rpcUrl: string, privateKey: Hex, routeApiUrl: string, chainId: number, private readonly costs?: RpcCostLedger, routeApiSecret = process.env.KEEPER_ROUTE_API_HMAC_SECRET ?? '', private readonly multicall3: Address = '0xca11bde05977b3631167028862be2a173976ca11') {
     this.account = privateKeyToAccount(privateKey);
-    const transport = http(rpcUrl);
-    const chain = defineChain({ id: chainId, name: 'Farmenta RPC', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
+    const transport = http(rpcUrl, { timeout: 10_000, onFetchRequest: () => { this.costs?.record(); } });
+    const chain = defineChain({ id: chainId, name: 'Farmenta RPC', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } }, contracts: { multicall3: { address: this.multicall3, blockCreated: 0 } } });
     this.publicClient = createPublicClient({ chain, transport });
     this.walletClient = createWalletClient({ account: this.account, chain, transport });
     this.routes = new V4RouteApi(routeApiUrl, routeApiSecret);
   }
 
   async positions(market: MarketAddresses, candidates: Candidate[]): Promise<Map<bigint, PositionState>> {
-    this.costs?.record();
     if (candidates.length === 0) return new Map();
     const calls = candidates.flatMap((candidate) => [
       { address: market.lens, abi: lensAbi, functionName: 'liquidationHealthFactor' as const, args: [candidate.tokenId] },
@@ -62,18 +62,20 @@ export class ViemChain implements Chain {
       { address: market.market, abi: marketAbi, functionName: 'loanOf' as const, args: [candidate.tokenId] },
       { address: market.policy, abi: policyAbi, functionName: 'listingOf' as const, args: [candidate.poolId] },
     ]);
-    const results = await this.publicClient.multicall({ contracts: calls, allowFailure: false });
+    const results = await this.publicClient.multicall({ contracts: calls, allowFailure: true, multicallAddress: this.multicall3 });
     const now = Math.floor(Date.now() / 1_000);
     const states = new Map<bigint, PositionState>();
     for (let index = 0; index < candidates.length; index += 1) {
       const offset = index * 5;
-      const loan = results[offset + 3] as unknown as readonly [Address, number, bigint, `0x${string}`];
+      const values = results.slice(offset, offset + 5);
+      if (values.some((result) => result.status === 'failure')) continue;
+      const loan = values[3]!.result as unknown as readonly [Address, number, bigint, `0x${string}`];
       if (loan[3].toLowerCase() !== candidates[index]!.poolId.toLowerCase()) continue;
-      const listing = results[offset + 4] as unknown as readonly [boolean, boolean, number, number, number, number, number, number, number, number, bigint, bigint];
+      const listing = values[4]!.result as unknown as readonly [boolean, boolean, number, number, number, number, number, number, number, number, bigint, bigint];
       const rampStartsAt = listing[6];
       const rampEndsAt = rampStartsAt + listing[7];
       states.set(candidates[index]!.tokenId, {
-        healthFactor: results[offset] as bigint, closeFactorBps: Number(results[offset + 1]), debt: results[offset + 2] as bigint,
+        healthFactor: values[0]!.result as bigint, closeFactorBps: Number(values[1]!.result), debt: values[2]!.result as bigint,
         rampStartsAt, rampEndsAt: rampEndsAt > now ? rampEndsAt : 0,
       });
     }
@@ -94,7 +96,7 @@ export class ViemChain implements Chain {
   }
 
   async waitForReceipt(hash: Hex): Promise<void> {
-    const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    const receipt = await this.publicClient.waitForTransactionReceipt({ hash, timeout: 60_000 });
     if (receipt.status !== 'success') throw new Error('liquidation transaction reverted');
   }
 

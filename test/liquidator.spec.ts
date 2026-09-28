@@ -28,16 +28,16 @@ describe('Liquidator', () => {
   it('submits an unhealthy non-ramp position in the next poll', async () => {
     const { bot, chain } = harness();
     await bot.cycle();
-    expect(chain.simulate).toHaveBeenCalledWith(market, candidate, 1_000_000n, expect.anything());
+    expect(chain.simulate).toHaveBeenCalledWith(market, candidate, 1_010_000n, expect.anything());
     expect(chain.submit).toHaveBeenCalledOnce();
     expect(chain.waitForReceipt).toHaveBeenCalledWith('0xabc');
-    expect(chain.submit).toHaveBeenCalledWith(market, candidate, 1_000_000n, expect.anything(), 100n, 1n);
+    expect(chain.submit).toHaveBeenCalledWith(market, candidate, 1_010_000n, expect.anything(), 120n, 1n);
     expect(chain.sweep).toHaveBeenCalledWith(market, expect.any(String));
   });
 
   it('does not submit an unprofitable transaction after gas', async () => {
     const { bot, chain } = harness();
-    vi.mocked(chain.quote).mockResolvedValue({ calldata: '0x' as const, expectedProfit: 100n });
+    vi.mocked(chain.quote).mockResolvedValue({ calldata: '0x' as const, expectedProfit: 0n });
     await bot.cycle();
     expect(chain.submit).not.toHaveBeenCalled();
   });
@@ -46,8 +46,8 @@ describe('Liquidator', () => {
     const { bot, chain } = harness();
     vi.mocked(chain.quote).mockResolvedValue({ calldata: '0x' as const, expectedProfit: 1_000_000n, requiredRepayAmount: 1_000_001n });
     await bot.cycle();
-    expect(chain.simulate).toHaveBeenCalledWith(market, candidate, 1_000_001n, expect.anything());
-    expect(chain.submit).toHaveBeenCalledWith(market, candidate, 1_000_001n, expect.anything(), 100n, 1n);
+    expect(chain.simulate).toHaveBeenCalledWith(market, candidate, 1_010_000n, expect.anything());
+    expect(chain.submit).toHaveBeenCalledWith(market, candidate, 1_010_000n, expect.anything(), 120n, 1n);
   });
 
   it('waits 60 seconds for an active LT ramp', async () => {
@@ -125,5 +125,21 @@ describe('Liquidator', () => {
     await bot.cycle();
     expect(log).toHaveBeenCalledOnce();
     expect(chain.submit).not.toHaveBeenCalled();
+  });
+
+  it('continues monitoring when gas is below the send threshold', async () => {
+    const { bot, chain } = harness();
+    vi.mocked(chain.gasBalance).mockResolvedValue(0n);
+    await bot.cycle();
+    expect(chain.positions).toHaveBeenCalled();
+    expect(chain.submit).toHaveBeenCalledOnce();
+  });
+
+  it('alerts and survives an indexer failure', async () => {
+    const { chain, alerts } = harness();
+    const source = { candidates: vi.fn().mockRejectedValue(new Error('indexer is stale')) };
+    const bot = new Liquidator(source, chain, alerts, { markets: [market], treasury: market.market, maxCallBatch: 100, minGasBalance: 1n, dryRun: false });
+    await bot.cycle();
+    expect(alerts.send).toHaveBeenCalledWith(expect.stringContaining('cycle failed'));
   });
 });
