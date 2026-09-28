@@ -8,11 +8,15 @@ export class RpcCostLedger {
 
   record(requests = 1): void {
     const date = new Date().toISOString().slice(0, 10);
-    let usage: DailyUsage = { date, requests: 0, units: 0 };
-    try { usage = JSON.parse(readFileSync(this.path, 'utf8')) as DailyUsage; } catch { /* first write */ }
-    if (usage.date !== date) usage = { date, requests: 0, units: 0 };
+    const entries = (() => {
+      try { return readFileSync(this.path, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as DailyUsage); }
+      catch { return []; }
+    })();
+    const usage = entries.find((entry) => entry.date === date) ?? { date, requests: 0, units: 0 };
     usage.requests += requests;
     usage.units += requests * this.unitsPerRequest;
-    writeFileSync(this.path, `${JSON.stringify(usage)}\n`, { mode: 0o600 });
+    const index = entries.findIndex((entry) => entry.date === date);
+    if (index === -1) entries.push(usage); else entries[index] = usage;
+    writeFileSync(this.path, `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`, { mode: 0o600 });
   }
 }
