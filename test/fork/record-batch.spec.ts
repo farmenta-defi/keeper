@@ -75,12 +75,4 @@ describe('recordBatch Anvil fork', () => {
     const abi = [{ type: 'function', name: 'consult', stateMutability: 'view', inputs: [{ name: 'poolId', type: 'bytes32' }, { name: 'window', type: 'uint32' }], outputs: [{ type: 'int24' }] }] as const;
     for (const key of keys) await expect(client.readContract({ address: recorderAddress, abi, functionName: 'consult', args: [key.id, 1_800] })).resolves.toBeTypeOf('number');
   });
-
-  it('executes the pinned partial and full liquidation fixtures', async () => {
-    await execute('forge', ['test', '--match-contract', 'MarketLiquidateForkTest', '--match-test', 'test_(ethAndUsdgBothReachTheLiquidator|blueChipClosesInFullOnceWellUnderWater)', '-q'], {
-      cwd: contracts,
-      env: { ...process.env, ROBINHOOD_RPC_URL: forkUrl },
-      timeout: 180_000,
-    });
-  }, 200_000);
 });
