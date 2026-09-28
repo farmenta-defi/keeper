@@ -199,6 +199,85 @@ describe('Liquidator', () => {
     expect(chain.recordPool).toHaveBeenCalledTimes(2);
   });
 
+  describe('a stale pool', () => {
+    const poolKey = { id: candidate.poolId, currency0: market.market, currency1: market.lens, fee: 500, tickSpacing: 10, hooks: market.helper, observationAgeSeconds: null };
+    const staleBot = (state: PositionState = { ...unhealthy, stale: true }) => {
+      const { chain, alerts } = harness(state);
+      const clock = { now: 1_000 };
+      const bot = new Liquidator({ candidates: async () => [{ ...candidate, poolKey }] }, chain, alerts, { markets: [market], treasury: market.market, maxCallBatch: 100, minGasBalance: 1n, dryRun: false, now: () => clock.now });
+      return { bot, chain, alerts, clock };
+    };
+
+    it('is liquidated after the 60 seconds even when its record failed', async () => {
+      const { bot, chain, alerts, clock } = staleBot();
+      vi.mocked(chain.recordPool).mockRejectedValue(new Error('insufficient funds'));
+      await bot.cycle();
+      expect(chain.submit).not.toHaveBeenCalled();
+      expect(alerts.send).toHaveBeenCalledWith(`stale TWAP record failed for pool ${candidate.poolId}`);
+      clock.now += 60;
+      await bot.cycle();
+      expect(chain.submit).toHaveBeenCalledOnce();
+    });
+
+    it('is left alone when the loan is liquidated by someone else, or healthy again, inside the 60 seconds', async () => {
+      for (const cleared of [{ ...unhealthy, debt: 0n, stale: true }, { ...unhealthy, healthFactor: 10n ** 18n, stale: false }]) {
+        const { bot, chain, clock } = staleBot();
+        vi.mocked(chain.positions).mockResolvedValueOnce(new Map([[candidate.tokenId, { ...unhealthy, stale: true }]])).mockResolvedValue(new Map([[candidate.tokenId, cleared]]));
+        await bot.cycle();
+        clock.now += 30;
+        await bot.cycle();
+        clock.now += 60;
+        await bot.cycle();
+        expect(chain.simulate).not.toHaveBeenCalled();
+        expect(chain.submit).not.toHaveBeenCalled();
+      }
+    });
+
+    it('alerts after 180 seconds, as a pool whose ramp is running does', async () => {
+      const { bot, chain, alerts, clock } = staleBot();
+      vi.mocked(chain.quote).mockResolvedValue({ calldata: '0x' as const, expectedProfit: 0n });
+      await bot.cycle();
+      clock.now += 121;
+      await bot.cycle();
+      expect(alerts.send).not.toHaveBeenCalled();
+      clock.now += 60;
+      await bot.cycle();
+      expect(alerts.send).toHaveBeenCalledWith('liquidation candidate 7 remains unhealthy for 181s');
+    });
+  });
+
+  it('reads the next market when the views of one fail, and says so', async () => {
+    const second: MarketAddresses = { ...market, market: '0x0000000000000000000000000000000000000011' };
+    const other: Candidate = { ...candidate, market: second.market, tokenId: 8n };
+    const { chain, alerts } = harness();
+    vi.mocked(chain.positions).mockImplementation(async (read, candidates) => {
+      if (read.market === market.market) throw new Error('StalePrice');
+      return new Map(candidates.map(({ tokenId }) => [tokenId, unhealthy]));
+    });
+    const bot = new Liquidator({ candidates: async () => [candidate, other] }, chain, alerts, { markets: [market, second], treasury: market.market, maxCallBatch: 100, minGasBalance: 1n, dryRun: false, now: () => 1_000 });
+    await bot.cycle();
+    expect(chain.submit).toHaveBeenCalledOnce();
+    expect(chain.submit).toHaveBeenCalledWith(second, other, 1_010_000n, expect.anything(), 120n, 1n);
+    expect(alerts.send).toHaveBeenCalledWith('position view batch failed: simulation or execution failed');
+  });
+
+  it('alerts for one position whose view is missing and liquidates the others', async () => {
+    const missing: Candidate = { ...candidate, tokenId: 6n };
+    const { chain, alerts } = harness();
+    const bot = new Liquidator({ candidates: async () => [missing, candidate] }, chain, alerts, { markets: [market], treasury: market.market, maxCallBatch: 100, minGasBalance: 1n, dryRun: false, now: () => 1_000 });
+    await bot.cycle();
+    expect(alerts.send).toHaveBeenCalledWith('position view failed for candidate 6');
+    expect(chain.submit).toHaveBeenCalledOnce();
+  });
+
+  it('alerts on a low gas balance and keeps liquidating', async () => {
+    const { bot, chain, alerts } = harness();
+    vi.mocked(chain.gasBalance).mockResolvedValue(0n);
+    await bot.cycle();
+    expect(alerts.send).toHaveBeenCalledWith('keeper liquidator gas balance is below its configured minimum');
+    expect(chain.submit).toHaveBeenCalledOnce();
+  });
+
   it('compares the profit with the gas in USDG', async () => {
     // 600,000 gas at 0.02 gwei is 1.2e13 wei: $0.0288 at 2,400 USD per ETH, 28,800 units of USDG.
     const priced = (expectedProfit: bigint) => {
