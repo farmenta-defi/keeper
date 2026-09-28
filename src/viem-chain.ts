@@ -24,7 +24,7 @@ const USDG_TO_18_DECIMAL_INPUT = 1_000_000_000_000n;
 
 type SimulationEvent = { eventName: string; address: string; args: Record<string, unknown> };
 
-function decodeSimulationLogs(value: unknown): SimulationEvent[] {
+export function decodeSimulationLogs(value: unknown): SimulationEvent[] {
   const events: SimulationEvent[] = [];
   const visit = (node: unknown): void => {
     if (!node || typeof node !== 'object') return;
