@@ -42,6 +42,14 @@ describe('Liquidator', () => {
     expect(chain.submit).not.toHaveBeenCalled();
   });
 
+  it('uses the fee-purchase-adjusted repayment returned by the route simulation', async () => {
+    const { bot, chain } = harness();
+    vi.mocked(chain.quote).mockResolvedValue({ calldata: '0x' as const, expectedProfit: 1_000_000n, requiredRepayAmount: 1_000_001n });
+    await bot.cycle();
+    expect(chain.simulate).toHaveBeenCalledWith(market, candidate, 1_000_001n, expect.anything());
+    expect(chain.submit).toHaveBeenCalledWith(market, candidate, 1_000_001n, expect.anything(), 100n, 1n);
+  });
+
   it('waits 60 seconds for an active LT ramp', async () => {
     const { chain, alerts } = harness({ ...unhealthy, rampStartsAt: 900, rampEndsAt: 2_000 });
     let now = 1_000;
@@ -54,6 +62,27 @@ describe('Liquidator', () => {
     now += 60;
     await bot.cycle();
     expect(chain.submit).toHaveBeenCalledOnce();
+  });
+
+  it('does not submit when a public liquidator clears a ramp candidate', async () => {
+    const { chain, alerts } = harness({ ...unhealthy, rampStartsAt: 900, rampEndsAt: 2_000 });
+    vi.mocked(chain.positions).mockResolvedValueOnce(new Map([[candidate.tokenId, { ...unhealthy, rampStartsAt: 900, rampEndsAt: 2_000 }]])).mockResolvedValueOnce(new Map([[candidate.tokenId, { ...unhealthy, debt: 0n, rampStartsAt: 900, rampEndsAt: 2_000 }]]));
+    const bot = new Liquidator({ candidates: async () => [candidate] }, chain, alerts, { markets: [market], treasury: '0x0000000000000000000000000000000000000005', maxCallBatch: 100, minGasBalance: 1n, dryRun: false, now: () => 1_000 });
+    await bot.cycle();
+    await bot.cycle();
+    expect(chain.simulate).not.toHaveBeenCalled();
+    expect(chain.submit).not.toHaveBeenCalled();
+  });
+
+  it('alerts after an unhealthy position persists past 120 seconds', async () => {
+    const { chain, alerts } = harness();
+    let now = 1_000;
+    vi.mocked(chain.quote).mockResolvedValue({ calldata: '0x' as const, expectedProfit: 0n });
+    const persistentBot = new Liquidator({ candidates: async () => [candidate] }, chain, alerts, { markets: [market], treasury: '0x0000000000000000000000000000000000000005', maxCallBatch: 100, minGasBalance: 1n, dryRun: false, now: () => now });
+    await persistentBot.cycle();
+    now += 121;
+    await persistentBot.cycle();
+    expect(alerts.send).toHaveBeenCalledWith(expect.stringContaining('remains unhealthy'));
   });
 
   it('does not delay a position for a ramp that has not started', async () => {

@@ -17,6 +17,8 @@ export interface LiquidatorConfig {
   chainId: number;
   privateKey: `0x${string}`;
   indexerUrl: string;
+  maxIndexerLagSeconds: number;
+  rpcCostPath: string;
   routeApiUrl: string;
   markets: MarketAddresses[];
   treasury: Address;
@@ -34,6 +36,8 @@ export function liquidatorConfig(argv = process.argv): LiquidatorConfig {
     chainId: positiveInteger('KEEPER_CHAIN_ID', 4663),
     privateKey: required('KEEPER_PRIVATE_KEY') as `0x${string}`,
     indexerUrl: required('KEEPER_INDEXER_URL').replace(/\/$/, ''),
+    maxIndexerLagSeconds: positiveInteger('KEEPER_MAX_INDEXER_LAG_SECONDS', 60),
+    rpcCostPath: process.env.KEEPER_RPC_COST_PATH ?? './rpc-cost.json',
     routeApiUrl: required('KEEPER_ROUTE_API_URL').replace(/\/$/, ''),
     markets,
     treasury: required('KEEPER_TREASURY') as Address,

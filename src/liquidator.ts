@@ -83,7 +83,6 @@ export class Liquidator {
     try {
       const route = await this.chain.quote(market, candidate, closeFactorRepay);
       const repayAmount = route.requiredRepayAmount ?? closeFactorRepay;
-      if (repayAmount > state.debt) throw new Error('route requested more than the current debt');
       const gas = await this.chain.simulate(market, candidate, repayAmount, route);
       const gasPrice = await this.chain.gasPrice();
       const plan: TransactionPlan = { candidate, repayAmount, route, gas, gasPrice };

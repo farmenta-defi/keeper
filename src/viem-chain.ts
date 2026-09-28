@@ -1,12 +1,13 @@
 import { createPublicClient, createWalletClient, defineChain, http, parseAbi, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { Address, Candidate, Chain, MarketAddresses, PositionState, SwapRoute } from './types.js';
+import type { RpcCostLedger } from './rpc-cost.js';
 
 const lensAbi = parseAbi([
   'function liquidationHealthFactor(uint256 tokenId) view returns (uint256)',
   'function liquidationCloseFactorBps(uint256 tokenId) view returns (uint16)',
 ]);
-const marketAbi = parseAbi(['function debtOf(uint256 tokenId) view returns (uint256)', 'function asset() view returns (address)']);
+const marketAbi = parseAbi(['function debtOf(uint256 tokenId) view returns (uint256)', 'function asset() view returns (address)', 'function loanOf(uint256 tokenId) view returns (address owner, uint8 tier, uint256 debtShares, bytes32 poolKeyId)']);
 const policyAbi = parseAbi(['function listingOf(bytes32 poolId) view returns (bool,bool,uint8,uint16,uint16,uint16,uint40,uint40,uint16,uint16,uint128,uint128)']);
 const helperAbi = parseAbi(['function execute(uint256 tokenId, uint256 repayAmount, bytes swapCalldata)']);
 const erc20Abi = parseAbi(['function balanceOf(address) view returns (uint256)', 'function transfer(address,uint256) returns (bool)']);
@@ -36,7 +37,7 @@ export class ViemChain implements Chain {
   private readonly walletClient;
   private readonly routes: V4RouteApi;
 
-  constructor(rpcUrl: string, privateKey: Hex, routeApiUrl: string, chainId: number) {
+  constructor(rpcUrl: string, privateKey: Hex, routeApiUrl: string, chainId: number, private readonly costs?: RpcCostLedger) {
     this.account = privateKeyToAccount(privateKey);
     const transport = http(rpcUrl);
     const chain = defineChain({ id: chainId, name: 'Farmenta RPC', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
@@ -46,19 +47,23 @@ export class ViemChain implements Chain {
   }
 
   async positions(market: MarketAddresses, candidates: Candidate[]): Promise<Map<bigint, PositionState>> {
+    this.costs?.record();
     if (candidates.length === 0) return new Map();
     const calls = candidates.flatMap((candidate) => [
       { address: market.lens, abi: lensAbi, functionName: 'liquidationHealthFactor' as const, args: [candidate.tokenId] },
       { address: market.lens, abi: lensAbi, functionName: 'liquidationCloseFactorBps' as const, args: [candidate.tokenId] },
       { address: market.market, abi: marketAbi, functionName: 'debtOf' as const, args: [candidate.tokenId] },
+      { address: market.market, abi: marketAbi, functionName: 'loanOf' as const, args: [candidate.tokenId] },
       { address: market.policy, abi: policyAbi, functionName: 'listingOf' as const, args: [candidate.poolId] },
     ]);
     const results = await this.publicClient.multicall({ contracts: calls, allowFailure: false });
     const now = Math.floor(Date.now() / 1_000);
     const states = new Map<bigint, PositionState>();
     for (let index = 0; index < candidates.length; index += 1) {
-      const offset = index * 4;
-      const listing = results[offset + 3] as unknown as readonly [boolean, boolean, number, number, number, number, number, number, number, number, bigint, bigint];
+      const offset = index * 5;
+      const loan = results[offset + 3] as unknown as readonly [Address, number, bigint, `0x${string}`];
+      if (loan[3].toLowerCase() !== candidates[index]!.poolId.toLowerCase()) continue;
+      const listing = results[offset + 4] as unknown as readonly [boolean, boolean, number, number, number, number, number, number, number, number, bigint, bigint];
       const rampStartsAt = listing[6];
       const rampEndsAt = rampStartsAt + listing[7];
       states.set(candidates[index]!.tokenId, {
