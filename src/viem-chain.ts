@@ -20,6 +20,7 @@ class V4RouteApi {
   async quote(candidate: Candidate, repayAmount: bigint): Promise<SwapRoute> {
     const response = await this.fetcher(`${this.url}/v4-quote`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
+      signal: AbortSignal.timeout(5_000),
       body: JSON.stringify({ market: candidate.market, tokenId: candidate.tokenId.toString(), poolId: candidate.poolId, repayAmount: repayAmount.toString() }),
     });
     if (!response.ok) throw new Error(`V4Quoter route request failed: ${response.status}`);
@@ -58,10 +59,11 @@ export class ViemChain implements Chain {
     for (let index = 0; index < candidates.length; index += 1) {
       const offset = index * 4;
       const listing = results[offset + 3] as unknown as readonly [boolean, boolean, number, number, number, number, number, number, number, number, bigint, bigint];
-      const rampEndsAt = listing[6] + listing[7];
+      const rampStartsAt = listing[6];
+      const rampEndsAt = rampStartsAt + listing[7];
       states.set(candidates[index]!.tokenId, {
         healthFactor: results[offset] as bigint, closeFactorBps: Number(results[offset + 1]), debt: results[offset + 2] as bigint,
-        rampEndsAt: rampEndsAt > now ? rampEndsAt : 0,
+        rampStartsAt, rampEndsAt: rampEndsAt > now ? rampEndsAt : 0,
       });
     }
     return states;
@@ -76,8 +78,8 @@ export class ViemChain implements Chain {
 
   gasPrice(): Promise<bigint> { return this.publicClient.getGasPrice(); }
 
-  async submit(market: MarketAddresses, candidate: Candidate, repayAmount: bigint, route: SwapRoute): Promise<Hex> {
-    return this.walletClient.writeContract({ address: market.helper, abi: helperAbi, functionName: 'execute', args: [candidate.tokenId, repayAmount, route.calldata] });
+  async submit(market: MarketAddresses, candidate: Candidate, repayAmount: bigint, route: SwapRoute, gas: bigint, maxFeePerGas: bigint): Promise<Hex> {
+    return this.walletClient.writeContract({ address: market.helper, abi: helperAbi, functionName: 'execute', args: [candidate.tokenId, repayAmount, route.calldata], gas, maxFeePerGas });
   }
 
   async waitForReceipt(hash: Hex): Promise<void> {

@@ -7,7 +7,7 @@ const market: MarketAddresses = {
   helper: '0x0000000000000000000000000000000000000003', policy: '0x0000000000000000000000000000000000000004',
 };
 const candidate: Candidate = { market: market.market, tokenId: 7n, poolId: `0x${'0'.repeat(64)}`, tier: 2 };
-const unhealthy: PositionState = { healthFactor: 980_000_000_000_000_000n, debt: 1_000_000n, closeFactorBps: 10_000, rampEndsAt: 0 };
+const unhealthy: PositionState = { healthFactor: 980_000_000_000_000_000n, debt: 1_000_000n, closeFactorBps: 10_000, rampStartsAt: 0, rampEndsAt: 0 };
 
 function harness(state = unhealthy) {
   const chain: Chain = {
@@ -31,6 +31,7 @@ describe('Liquidator', () => {
     expect(chain.simulate).toHaveBeenCalledWith(market, candidate, 1_000_000n, expect.anything());
     expect(chain.submit).toHaveBeenCalledOnce();
     expect(chain.waitForReceipt).toHaveBeenCalledWith('0xabc');
+    expect(chain.submit).toHaveBeenCalledWith(market, candidate, 1_000_000n, expect.anything(), 100n, 1n);
     expect(chain.sweep).toHaveBeenCalledWith(market, expect.any(String));
   });
 
@@ -42,7 +43,7 @@ describe('Liquidator', () => {
   });
 
   it('waits 60 seconds for an active LT ramp', async () => {
-    const { chain, alerts } = harness({ ...unhealthy, rampEndsAt: 2_000 });
+    const { chain, alerts } = harness({ ...unhealthy, rampStartsAt: 900, rampEndsAt: 2_000 });
     let now = 1_000;
     const bot = new Liquidator({ candidates: async () => [candidate] }, chain, alerts, {
       markets: [market], treasury: '0x0000000000000000000000000000000000000005', maxCallBatch: 100,
@@ -51,6 +52,12 @@ describe('Liquidator', () => {
     await bot.cycle();
     expect(chain.submit).not.toHaveBeenCalled();
     now += 60;
+    await bot.cycle();
+    expect(chain.submit).toHaveBeenCalledOnce();
+  });
+
+  it('does not delay a position for a ramp that has not started', async () => {
+    const { bot, chain } = harness({ ...unhealthy, rampStartsAt: 1_100, rampEndsAt: 2_000 });
     await bot.cycle();
     expect(chain.submit).toHaveBeenCalledOnce();
   });

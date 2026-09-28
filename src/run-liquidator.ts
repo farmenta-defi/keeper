@@ -15,11 +15,14 @@ const alerts: AlertSink = {
 };
 const bot = new Liquidator(new IndexerSource(config.indexerUrl, config.markets.map((market) => market.market)), new ViemChain(config.rpcUrl, config.privateKey, config.routeApiUrl, config.chainId), alerts, config);
 
-await bot.cycle();
+const runCycle = async (): Promise<void> => {
+  try { await bot.cycle(); } catch (error) { console.error('liquidator cycle failed', error instanceof Error ? error.name : 'unknown error'); }
+};
+await runCycle();
 if (!config.dryRun) {
   const poll = async (): Promise<void> => {
     await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
-    try { await bot.cycle(); } catch (error) { console.error('liquidator cycle failed', error instanceof Error ? error.name : 'unknown error'); }
+    await runCycle();
     await poll();
   };
   await poll();

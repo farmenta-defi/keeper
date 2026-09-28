@@ -12,10 +12,10 @@ export class IndexerSource implements CandidateSource {
   constructor(private readonly baseUrl: string, private readonly markets: Address[], private readonly fetcher: typeof fetch = fetch) {}
 
   async candidates(): Promise<Candidate[]> {
-    const memeResponse = await this.fetcher(`${this.baseUrl}/loans/keeper-candidates`);
+    const memeResponse = await this.fetcher(`${this.baseUrl}/loans/keeper-candidates`, { signal: AbortSignal.timeout(5_000) });
     if (!memeResponse.ok) throw new Error(`keeper candidates request failed: ${memeResponse.status}`);
     const blueChipResponses = await Promise.all(this.markets.map(async (market) => {
-      const response = await this.fetcher(`${this.baseUrl}/loans?status=in_custody&market=${market}`);
+      const response = await this.fetcher(`${this.baseUrl}/loans?status=in_custody&market=${market}`, { signal: AbortSignal.timeout(5_000) });
       if (!response.ok) throw new Error(`market loan request failed: ${response.status}`);
       return asRows(await response.json());
     }));

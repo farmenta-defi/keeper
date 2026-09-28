@@ -19,7 +19,7 @@ describe('IndexerSource', () => {
       { market, tokenId: 4n, poolId, tier: 2 },
       { market, tokenId: 8n, poolId, tier: 1 },
     ]);
-    expect(fetcher).toHaveBeenNthCalledWith(1, 'http://indexer/loans/keeper-candidates');
-    expect(fetcher).toHaveBeenNthCalledWith(2, `http://indexer/loans?status=in_custody&market=${market}`);
+    expect(fetcher).toHaveBeenNthCalledWith(1, 'http://indexer/loans/keeper-candidates', expect.anything());
+    expect(fetcher).toHaveBeenNthCalledWith(2, `http://indexer/loans?status=in_custody&market=${market}`, expect.anything());
   });
 });

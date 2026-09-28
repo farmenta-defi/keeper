@@ -8,6 +8,7 @@ export interface PositionState {
   healthFactor: bigint;
   debt: bigint;
   closeFactorBps: number;
+  rampStartsAt: number;
   rampEndsAt: number;
 }
 
@@ -33,7 +34,7 @@ export interface Chain {
   quote(market: MarketAddresses, candidate: Candidate, repayAmount: bigint): Promise<SwapRoute>;
   simulate(market: MarketAddresses, candidate: Candidate, repayAmount: bigint, route: SwapRoute): Promise<bigint>;
   gasPrice(): Promise<bigint>;
-  submit(market: MarketAddresses, candidate: Candidate, repayAmount: bigint, route: SwapRoute): Promise<`0x${string}`>;
+  submit(market: MarketAddresses, candidate: Candidate, repayAmount: bigint, route: SwapRoute, gas: bigint, maxFeePerGas: bigint): Promise<`0x${string}`>;
   waitForReceipt(hash: `0x${string}`): Promise<void>;
   sweep(market: MarketAddresses, treasury: Address): Promise<`0x${string}` | undefined>;
   gasBalance(): Promise<bigint>;

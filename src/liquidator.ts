@@ -71,7 +71,7 @@ export class Liquidator {
     const candidateKey = key(candidate);
     const firstSeenAt = this.firstUnhealthyAt.get(candidateKey) ?? now;
     this.firstUnhealthyAt.set(candidateKey, firstSeenAt);
-    const rampActive = state.rampEndsAt > now;
+    const rampActive = state.rampStartsAt <= now && state.rampEndsAt > now;
     const persistedFor = now - firstSeenAt;
     const alertAfter = rampActive ? 180 : 120;
     if (persistedFor > alertAfter) await this.alert(`unhealthy:${candidateKey}`, `liquidation candidate ${candidate.tokenId} remains unhealthy for ${persistedFor}s`);
@@ -92,7 +92,7 @@ export class Liquidator {
         (this.options.log ?? console.log)(JSON.stringify(serializePlan(plan)));
         return;
       }
-      const transactionHash = await this.chain.submit(market, candidate, repayAmount, route);
+      const transactionHash = await this.chain.submit(market, candidate, repayAmount, route, gas, gasPrice);
       await this.chain.waitForReceipt(transactionHash);
       await this.chain.sweep(market, this.options.treasury);
       this.firstUnhealthyAt.delete(candidateKey);
