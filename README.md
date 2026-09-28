@@ -82,3 +82,55 @@ RPC and a checkout of the pinned smart-contract commit (`contracts/source.json`)
 ```sh
 FORK_RPC_URL=<paid RPC> SMART_CONTRACT_DIR=<smart-contract checkout at the pinned commit> bun run test:fork
 ```
+
+## Liquidation monitor
+
+The liquidation process polls every two seconds. It reads candidates from the indexer, but debt and
+liquidation decisions come from contracts (`debtOf`, `MarketLens.liquidationHealthFactor`, and
+`MarketLens.liquidationCloseFactorBps`): there is no health-factor arithmetic in this repository.
+
+For a loan with a health factor under 1 it:
+
+1. Waits 60 seconds first when the pool's LT ramp is running, or when the loan is a meme loan whose
+   pool is stale (`TwapRecorder.consult` reverts). A stale pool is sent one `record` at once.
+2. Simulates `LiquidatorHelper.execute` with `eth_simulateV1` and reads what is seized from the
+   market's `Liquidate` event. The amount to sell and the profit do not follow from the repayment,
+   so neither is derived from it.
+3. Quotes the seized token on `V4Quoter` through every pool of `KEEPER_ROUTE_POOLS_JSON` that pairs
+   it with USDG, and through the position's own pool. After a full seizure the position's own pool
+   is left out: the position can be all of its active liquidity.
+4. Builds the UniversalRouter calldata with a floor `KEEPER_SLIPPAGE_BPS` under the best quote,
+   simulates it again for the profit, and runs the exact call through `eth_call`.
+5. Sends only when that profit, less what the floor still lets the swap lose, is above the gas.
+   A swap under the floor reverts in the helper, and the whole liquidation with it.
+6. Sweeps the USDG it was paid to `KEEPER_TREASURY`.
+
+`FeePurchaseUnderfunded` raises the budget to the repayment plus what the market asked for, capped
+at the debt, and is tried once more in the same cycle. A race lost to another liquidator reverts in
+simulation and costs no gas.
+
+The RPC must serve `eth_simulateV1`. A full seizure needs at least one pool in
+`KEEPER_ROUTE_POOLS_JSON`; without one the loan is not liquidated and the alert says so.
+
+Run `bun run keeper:liquidate --dry-run` to print the plan of one cycle without broadcasting, or
+omit `--dry-run` to run the loop. Run this process under its own Unix user with its own `.env` and
+`KEEPER_LIQUIDATOR_PRIVATE_KEY`; the scheduler wallet must never be reused. `KEEPER_MARKETS_JSON`
+contains the deployed market, lens, helper, and policy addresses.
+
+### Contract ABIs
+
+`src/contract-abi.ts` is generated from the forge artifacts of the commit in
+`contracts/source.json`. After a re-pin, check that commit out, build it, and regenerate:
+
+```sh
+SMART_CONTRACT_DIR=<smart-contract checkout at the pinned commit> bun run abi:generate
+```
+
+### Fork tests
+
+`bun run test:fork` also runs the liquidation bot against an Anvil fork: `script/Deploy.s.sol` of
+the pinned contracts deploys Farmenta onto the fork, a loan is opened on a real position, and the
+ETH/USD feed is moved until the loan is unhealthy. `Liquidator` and `ViemChain` are the ones the
+process runs; only the indexer's candidate list and Telegram are stubbed. The checkout needs its
+submodules (`git clone --recurse-submodules`, or `git submodule update --init --recursive`), and
+Anvil must serve `eth_simulateV1`.
