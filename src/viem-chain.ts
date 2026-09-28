@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, defineChain, encodeAbiParameters, encodeFunctionData, http, parseAbi, type Hex } from 'viem';
+import { createPublicClient, createWalletClient, decodeEventLog, defineChain, encodeAbiParameters, encodeFunctionData, http, parseAbi, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { Address, Candidate, Chain, MarketAddresses, PoolKey, PositionState, SwapRoute } from './types.js';
 import type { RpcCostLedger } from './rpc-cost.js';
@@ -14,19 +14,53 @@ const erc20Abi = parseAbi(['function balanceOf(address) view returns (uint256)',
 const quoterAbi = parseAbi(['function quoteExactInputSingle(((address,address,uint24,int24,address),bool,uint128,bytes)) returns (uint256,uint256)']);
 const routerAbi = parseAbi(['function execute(bytes,bytes[],uint256) payable']);
 const recorderAbi = parseAbi(['function consult(bytes32,uint32) view returns (int24)', 'function record((address,address,uint24,int24,address))']);
+const liquidationEventsAbi = parseAbi([
+  'event Liquidate(uint256 indexed tokenId,address indexed liquidator,uint256 repaid,uint256 out0,uint256 out1,uint256 badDebt)',
+  'event Transfer(address indexed from,address indexed to,uint256 value)',
+]);
 const OPEN_DELTA = 0n;
 const CONTRACT_BALANCE = 1n << 255n;
 const USDG_TO_18_DECIMAL_INPUT = 1_000_000_000_000n;
 
+type SimulationEvent = { eventName: string; address: string; args: Record<string, unknown> };
+
+function decodeSimulationLogs(value: unknown): SimulationEvent[] {
+  const events: SimulationEvent[] = [];
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { for (const item of node) visit(item); return; }
+    const object = node as Record<string, unknown>;
+    if (Array.isArray(object.logs)) {
+      for (const log of object.logs) {
+        if (!log || typeof log !== 'object') continue;
+        const entry = log as { address?: string; data?: string; topics?: string[] };
+        if (!entry.address || !entry.data || !entry.topics) continue;
+        try {
+          const decoded = decodeEventLog({ abi: liquidationEventsAbi, data: entry.data as Hex, topics: entry.topics as [Hex, ...Hex[]] });
+          events.push({ eventName: decoded.eventName, address: entry.address, args: decoded.args as Record<string, unknown> });
+        } catch { /* Ignore logs emitted by the router and token contracts. */ }
+      }
+    }
+    for (const child of Object.values(object)) visit(child);
+  };
+  visit(value);
+  return events;
+}
+
 class V4RouteBuilder {
   constructor(private readonly client: ReturnType<typeof createPublicClient>, private readonly quoter: Address, private readonly router: Address, private readonly usdg: Address) {}
 
-  async quote(candidate: Candidate, repayAmount: bigint, configuredPools: PoolKey[] = [], seizedAmount?: bigint): Promise<SwapRoute> {
-    const keys = (configuredPools.length > 0 ? configuredPools : candidate.poolKey ? [candidate.poolKey] : []).filter((key, index, all) => all.findIndex((other) => other.id.toLowerCase() === key.id.toLowerCase()) === index);
+  async quote(candidate: Candidate, repayAmount: bigint, configuredPools: PoolKey[] = [], seizedAmount?: bigint, excludedPoolId?: string): Promise<SwapRoute> {
+    const keys = [...configuredPools, ...(candidate.poolKey ? [candidate.poolKey] : [])]
+      .filter((key) => !excludedPoolId || key.id.toLowerCase() !== excludedPoolId.toLowerCase())
+      .filter((key, index, all) => all.findIndex((other) => other.id.toLowerCase() === key.id.toLowerCase()) === index);
     if (keys.length === 0) throw new Error(`pool key ${candidate.poolId} is unavailable from indexer`);
     const usd = this.usdg.toLowerCase();
+    const seizedCurrency = candidate.poolKey ? (candidate.poolKey.currency0.toLowerCase() === usd ? candidate.poolKey.currency1 : candidate.poolKey.currency0).toLowerCase() : undefined;
+    const compatibleKeys = keys.filter((key) => !seizedCurrency || key.currency0.toLowerCase() === seizedCurrency || key.currency1.toLowerCase() === seizedCurrency);
+    if (compatibleKeys.length === 0) throw new Error(`no configured route pool supports seized token for ${candidate.poolId}`);
     const quotes = [] as Array<{ key: PoolKey; zeroForOne: boolean; input: Address; amountOut: bigint }>;
-    for (const key of keys) {
+    for (const key of compatibleKeys) {
     const zeroForOne = key.currency1.toLowerCase() === usd;
     if (!zeroForOne && key.currency0.toLowerCase() !== usd) throw new Error('liquidation pool does not contain USDG');
     const input = zeroForOne ? key.currency0 : key.currency1;
@@ -98,9 +132,9 @@ export class ViemChain implements Chain {
   }
 
   async quote(market: MarketAddresses, candidate: Candidate, repayAmount: bigint): Promise<SwapRoute> {
-    const provisional = await this.routes.quote(candidate, repayAmount, market.routePools, 1n);
+    const provisional = await this.routes.quote(candidate, repayAmount, [], 1n);
     const simulation = await this.simulateSeizure(market, candidate, repayAmount, provisional);
-    const route = await this.routes.quote(candidate, repayAmount, market.routePools, simulation.seizedAmount);
+    const route = await this.routes.quote(candidate, repayAmount, market.routePools, simulation.seizedAmount, simulation.fullSeizure ? candidate.poolId : undefined);
     route.expectedProfit = simulation.profit;
     return route;
   }
@@ -110,27 +144,25 @@ export class ViemChain implements Chain {
     return await this.publicClient.estimateContractGas(simulation.request);
   }
 
-  private async simulateSeizure(market: MarketAddresses, candidate: Candidate, repayAmount: bigint, route: SwapRoute): Promise<{ seizedAmount: bigint; profit: bigint }> {
+  private async simulateSeizure(market: MarketAddresses, candidate: Candidate, repayAmount: bigint, route: SwapRoute): Promise<{ seizedAmount: bigint; profit: bigint; fullSeizure: boolean }> {
     const request = encodeFunctionData({ abi: helperAbi, functionName: 'execute', args: [candidate.tokenId, repayAmount, route.calldata] });
     try {
       const result = await this.publicClient.request({ method: 'eth_simulateV1', params: [{ blockStateCalls: [{ calls: [{ from: this.account.address, to: market.helper, data: request }] }], validation: false, traceTransfers: true }, 'latest'] } as never) as unknown;
-      const logs = JSON.stringify(result);
-      const event = logs.match(/"out0":"0x([0-9a-f]+)".*?"out1":"0x([0-9a-f]+)"/i);
-      if (event) {
-        const out0 = BigInt(`0x${event[1]}`);
-        const out1 = BigInt(`0x${event[2]}`);
-        const key = candidate.poolKey;
-        if (key) {
-          const usdgIs0 = key.currency0.toLowerCase() === this.usdg.toLowerCase();
-          const seizedAmount = usdgIs0 ? out1 : out0;
-          const usdgOut = usdgIs0 ? out0 : out1;
-          return { seizedAmount, profit: usdgOut > repayAmount ? usdgOut - repayAmount : 0n };
-        }
+      const decoded = decodeSimulationLogs(result);
+      const liquidation = decoded.find((event) => event.eventName === 'Liquidate');
+      const key = candidate.poolKey;
+      if (liquidation && key) {
+        const args = liquidation.args as { out0: bigint; out1: bigint; badDebt: bigint };
+        const usdgIs0 = key.currency0.toLowerCase() === this.usdg.toLowerCase();
+        const seizedAmount = usdgIs0 ? args.out1 : args.out0;
+        const transfer = decoded.find((event) => event.eventName === 'Transfer' && String((event.args as { to?: string }).to).toLowerCase() === this.account.address.toLowerCase() && event.address.toLowerCase() === this.usdg.toLowerCase());
+        const profit = transfer ? BigInt((transfer.args as { value: bigint }).value) : 0n;
+        return { seizedAmount, profit, fullSeizure: args.badDebt > 0n };
       }
     } catch (error) {
       throw new Error(`liquidation simulation logs unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
-    throw new Error('liquidation simulation did not emit a Liquidate event');
+    throw new Error('liquidation simulation did not emit a decodable Liquidate event');
   }
 
   gasPrice(): Promise<bigint> { return this.publicClient.getGasPrice(); }
