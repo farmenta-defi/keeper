@@ -85,9 +85,15 @@ export class LiquidationIndexerSource implements CandidateSource {
       const response = await this.fetcher(`${this.baseUrl}/loans?status=in_custody&market=${market}`, { signal: AbortSignal.timeout(5_000) });
       if (!response.ok) throw new Error(`market loan request failed: ${response.status}`); return asRows(await response.json());
     }));
+    const poolsResponse = await this.fetcher(`${this.baseUrl}/pools`, { signal: AbortSignal.timeout(5_000) });
+    if (!poolsResponse.ok) throw new Error(`pool request failed: ${poolsResponse.status}`);
+    const poolRows = asPoolRows(await poolsResponse.json());
+    const pools = new Map(poolRows.filter((row) => row.currency0 && row.currency1 && row.hooks && row.fee !== undefined && row.tickSpacing !== undefined).map((row) => [row.id.toLowerCase(), {
+      id: row.id as `0x${string}`, currency0: row.currency0 as Address, currency1: row.currency1 as Address, fee: row.fee!, tickSpacing: row.tickSpacing!, hooks: row.hooks as Address, observationAgeSeconds: row.observationAgeSeconds === undefined ? null : Number(row.observationAgeSeconds),
+    }]));
     const rows = [...asRows(await memeResponse.json()), ...blueChipResponses.flat()].filter((row) => row.everBorrowed !== false);
     const candidates = new Map<string, Candidate>();
-    for (const row of rows) { const candidate = { market: row.market, tokenId: BigInt(row.tokenId), poolId: row.poolId, tier: row.tier ?? 1 }; candidates.set(`${candidate.market.toLowerCase()}:${candidate.tokenId}`, candidate); }
+    for (const row of rows) { const candidate = { market: row.market, tokenId: BigInt(row.tokenId), poolId: row.poolId, tier: row.tier ?? 1, poolKey: pools.get(row.poolId.toLowerCase()) }; candidates.set(`${candidate.market.toLowerCase()}:${candidate.tokenId}`, candidate); }
     return [...candidates.values()];
   }
   private async assertFresh(): Promise<void> {
@@ -99,3 +105,6 @@ export class LiquidationIndexerSource implements CandidateSource {
     if (!Number.isFinite(lag) || lag > this.maxLagSeconds) throw new Error('indexer is stale; refusing to trust candidate enumeration');
   }
 }
+
+interface ApiPool { id: string; currency0?: string | null; currency1?: string | null; fee?: number | null; tickSpacing?: number | null; hooks?: string | null; observationAgeSeconds?: number | string | null }
+function asPoolRows(body: unknown): ApiPool[] { if (Array.isArray(body)) return body as ApiPool[]; throw new Error('pool response must be an array'); }

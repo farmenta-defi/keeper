@@ -43,9 +43,9 @@ function positiveInteger(name: string, fallback: number): number {
 
 export interface LiquidatorConfig {
   rpcUrl: string; chainId: number; privateKey: `0x${string}`; indexerUrl: string;
-  maxIndexerLagSeconds: number; rpcCostPath: string; routeApiUrl: string; routeApiHmacSecret: string;
+  maxIndexerLagSeconds: number; rpcCostPath: string; v4Quoter: Address; universalRouter: Address; usdg: Address;
   markets: MarketAddresses[]; treasury: Address; pollIntervalMs: number; maxCallBatch: number;
-  minGasBalance: bigint; dryRun: boolean; multicall3: Address;
+  minGasBalance: bigint; dryRun: boolean; multicall3: Address; recorder: Address;
   ethUsd: number;
 }
 
@@ -67,7 +67,7 @@ export function liquidatorConfig(argv = process.argv): LiquidatorConfig {
     indexerUrl: required('KEEPER_INDEXER_URL').replace(/\/$/, ''),
     maxIndexerLagSeconds: positiveInteger('KEEPER_MAX_INDEXER_LAG_SECONDS', 60),
     rpcCostPath: process.env.KEEPER_RPC_COST_PATH ?? './rpc-cost.json',
-    routeApiUrl: required('KEEPER_ROUTE_API_URL').replace(/\/$/, ''), routeApiHmacSecret: required('KEEPER_ROUTE_API_HMAC_SECRET'),
+    v4Quoter: address('KEEPER_V4_QUOTER'), universalRouter: address('KEEPER_UNIVERSAL_ROUTER'), usdg: address('KEEPER_USDG'), recorder: address('KEEPER_TWAP_RECORDER'),
     markets, treasury: required('KEEPER_TREASURY') as Address,
     pollIntervalMs: positiveInteger('KEEPER_POLL_INTERVAL_MS', 2_000), maxCallBatch: positiveInteger('KEEPER_MAX_CALL_BATCH', 100),
     minGasBalance: BigInt(required('KEEPER_MIN_GAS_BALANCE_WEI')), dryRun: argv.includes('--dry-run'), ethUsd, multicall3: address('KEEPER_MULTICALL3'),

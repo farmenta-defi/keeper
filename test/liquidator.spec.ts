@@ -14,7 +14,7 @@ function harness(state = unhealthy) {
     positions: vi.fn(async () => new Map([[candidate.tokenId, state]])),
     quote: vi.fn(async () => ({ calldata: '0x1234' as const, expectedProfit: 1_000_000n })),
     simulate: vi.fn(async () => 100n), gasPrice: vi.fn(async () => 1n), submit: vi.fn(async () => '0xabc' as const), waitForReceipt: vi.fn(async () => undefined),
-    sweep: vi.fn(async () => '0xsweep' as const), gasBalance: vi.fn(async () => 10_000n),
+    sweep: vi.fn(async () => '0xsweep' as const), gasBalance: vi.fn(async () => 10_000n), recordPool: vi.fn(async () => '0xrecord' as const),
   };
   const alerts: AlertSink = { send: vi.fn(async () => undefined) };
   const bot = new Liquidator({ candidates: async () => [candidate] }, chain, alerts, {
@@ -141,5 +141,20 @@ describe('Liquidator', () => {
     const bot = new Liquidator(source, chain, alerts, { markets: [market], treasury: market.market, maxCallBatch: 100, minGasBalance: 1n, dryRun: false });
     await bot.cycle();
     expect(alerts.send).toHaveBeenCalledWith(expect.stringContaining('cycle failed'));
+  });
+
+  it('records a stale pool and waits 60 seconds before liquidation', async () => {
+    const poolKey = { id: candidate.poolId, currency0: market.market, currency1: market.lens, fee: 500, tickSpacing: 10, hooks: market.helper, observationAgeSeconds: null };
+    const { chain, alerts } = harness({ ...unhealthy, stale: true });
+    const staleCandidate = { ...candidate, poolKey };
+    const source = { candidates: async () => [staleCandidate] };
+    let now = 1_000;
+    const bot = new Liquidator(source, chain, alerts, { markets: [market], treasury: market.market, maxCallBatch: 100, minGasBalance: 1n, dryRun: false, now: () => now });
+    await bot.cycle();
+    expect(chain.recordPool).toHaveBeenCalledWith(poolKey);
+    expect(chain.submit).not.toHaveBeenCalled();
+    now += 60;
+    await bot.cycle();
+    expect(chain.submit).toHaveBeenCalledOnce();
   });
 });

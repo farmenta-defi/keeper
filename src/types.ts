@@ -38,9 +38,9 @@ export interface PrimaryStore {
 export interface AlertSink { send(message: string): Promise<void> }
 export interface BackupPoolSource { staleMemePools(minimumAgeSeconds: number): Promise<PoolKey[]> }
 
-export interface Candidate { market: Address; tokenId: bigint; poolId: PoolId; tier: number }
+export interface Candidate { market: Address; tokenId: bigint; poolId: PoolId; tier: number; poolKey?: PoolKey }
 export interface MarketAddresses { market: Address; lens: Address; helper: Address; policy: Address }
-export interface PositionState { healthFactor: bigint; debt: bigint; closeFactorBps: number; rampStartsAt: number; rampEndsAt: number }
+export interface PositionState { healthFactor: bigint; debt: bigint; closeFactorBps: number; rampStartsAt: number; rampEndsAt: number; stale?: boolean }
 export interface SwapRoute { calldata: `0x${string}`; expectedProfit: bigint; requiredRepayAmount?: bigint }
 export interface TransactionPlan { candidate: Candidate; repayAmount: bigint; route: SwapRoute; gas: bigint; gasPrice: bigint }
 export interface CandidateSource { candidates(): Promise<Candidate[]> }
@@ -53,4 +53,5 @@ export interface Chain {
   waitForReceipt(hash: `0x${string}`): Promise<void>;
   sweep(market: MarketAddresses, treasury: Address): Promise<`0x${string}` | undefined>;
   gasBalance(): Promise<bigint>;
+  recordPool(poolKey: PoolKey): Promise<`0x${string}`>;
 }

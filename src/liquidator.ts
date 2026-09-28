@@ -23,6 +23,7 @@ export class Liquidator {
   private readonly firstUnhealthyAt = new Map<string, number>();
   private readonly failures = new Map<string, number>();
   private readonly lastAlertAt = new Map<string, number>();
+  private readonly staleRecorded = new Set<string>();
   private running = false;
 
   constructor(
@@ -81,10 +82,16 @@ export class Liquidator {
     this.firstUnhealthyAt.set(candidateKey, firstSeenAt);
     const rampActive = state.rampStartsAt <= now && state.rampEndsAt > now;
     const persistedFor = now - firstSeenAt;
+    if (state.stale && candidate.poolKey && !this.staleRecorded.has(candidate.poolId)) {
+      try {
+        await this.chain.recordPool(candidate.poolKey);
+        this.staleRecorded.add(candidate.poolId);
+      } catch { await this.alert(`record:${candidate.poolId}`, `stale TWAP record failed for pool ${candidate.poolId}`); }
+    }
     const alertAfter = rampActive ? 180 : 120;
     if (persistedFor > alertAfter) await this.alert(`unhealthy:${candidateKey}`, `liquidation candidate ${candidate.tokenId} remains unhealthy for ${persistedFor}s`);
 
-    if (rampActive && persistedFor < RAMP_GRACE_SECONDS) return;
+    if ((rampActive || state.stale) && persistedFor < RAMP_GRACE_SECONDS) return;
 
     const closeFactorRepay = state.debt * BigInt(state.closeFactorBps) / BPS + (state.closeFactorBps === 10_000 ? state.debt / 100n : 0n);
     if (closeFactorRepay === 0n) return;
