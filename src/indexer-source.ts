@@ -1,5 +1,4 @@
 import type { Address, Candidate, CandidateSource, IndexerSource, KeeperCandidate, PoolId, PoolKey } from './types.js';
-import type { RpcCostLedger } from './rpc-cost.js';
 
 const REQUEST_TIMEOUT_MS = 5_000;
 
@@ -76,7 +75,7 @@ function asRows(body: unknown): ApiCandidate[] {
 }
 
 export class LiquidationIndexerSource implements CandidateSource {
-  constructor(private readonly baseUrl: string, private readonly markets: Address[], private readonly maxLagSeconds = 60, private readonly fetcher: typeof fetch = fetch, private readonly now = () => Math.floor(Date.now() / 1_000), private readonly costs?: RpcCostLedger) {}
+  constructor(private readonly baseUrl: string, private readonly markets: Address[], private readonly maxLagSeconds = 60, private readonly fetcher: typeof fetch = fetch, private readonly now = () => Math.floor(Date.now() / 1_000)) {}
   async candidates(): Promise<Candidate[]> {
     await this.assertFresh();
     const memeResponse = await this.fetcher(`${this.baseUrl}/loans/keeper-candidates`, { signal: AbortSignal.timeout(5_000) });
