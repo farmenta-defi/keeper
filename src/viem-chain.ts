@@ -50,6 +50,16 @@ export function decodeSimulationLogs(value: unknown): SimulationEvent[] {
 class V4RouteBuilder {
   constructor(private readonly client: ReturnType<typeof createPublicClient>, private readonly quoter: Address, private readonly router: Address, private readonly usdg: Address) {}
 
+  async provisional(candidate: Candidate): Promise<SwapRoute> {
+    const key = candidate.poolKey;
+    if (!key) throw new Error(`pool key ${candidate.poolId} is unavailable from indexer`);
+    const usd = this.usdg.toLowerCase();
+    const zeroForOne = key.currency1.toLowerCase() === usd;
+    if (!zeroForOne && key.currency0.toLowerCase() !== usd) throw new Error('liquidation pool does not contain USDG');
+    const input = zeroForOne ? key.currency0 : key.currency1;
+    return this.build(key, zeroForOne, input, 0n);
+  }
+
   async quote(candidate: Candidate, repayAmount: bigint, configuredPools: PoolKey[] = [], seizedAmount?: bigint, excludedPoolId?: string): Promise<SwapRoute> {
     const keys = [...configuredPools, ...(candidate.poolKey ? [candidate.poolKey] : [])]
       .filter((key) => !excludedPoolId || key.id.toLowerCase() !== excludedPoolId.toLowerCase())
@@ -71,14 +81,18 @@ class V4RouteBuilder {
       quotes.push({ key, zeroForOne, input, amountOut });
     }
     const { key, zeroForOne, input, amountOut } = quotes.reduce((best, quote) => quote.amountOut > best.amountOut ? quote : best);
-    const minOut = seizedAmount === 1n ? 0n : amountOut * 9_950n / 10_000n;
+    const minOut = amountOut * 9_950n / 10_000n;
+    return this.build(key, zeroForOne, input, minOut, amountOut > repayAmount ? amountOut - repayAmount : 0n);
+  }
+
+  private async build(key: PoolKey, zeroForOne: boolean, input: Address, minOut: bigint, expectedProfit = 0n): Promise<SwapRoute> {
     const params = encodeAbiParameters([{ type: 'tuple', components: [{ type: 'tuple', name: 'poolKey', components: [{ type: 'address', name: 'currency0' }, { type: 'address', name: 'currency1' }, { type: 'uint24', name: 'fee' }, { type: 'int24', name: 'tickSpacing' }, { type: 'address', name: 'hooks' }] }, { type: 'bool', name: 'zeroForOne' }, { type: 'uint128', name: 'amountIn' }, { type: 'uint128', name: 'amountOutMinimum' }, { type: 'uint256', name: 'minHopPriceX36' }, { type: 'bytes', name: 'hookData' }] }], [{ poolKey: { currency0: key.currency0, currency1: key.currency1, fee: key.fee, tickSpacing: key.tickSpacing, hooks: key.hooks }, zeroForOne, amountIn: OPEN_DELTA, amountOutMinimum: minOut, minHopPriceX36: 0n, hookData: '0x' }]);
     const settle = encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }, { type: 'bool' }], [input, CONTRACT_BALANCE, false]);
     const take = encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], [this.usdg, minOut]);
     const swapInput = encodeAbiParameters([{ type: 'bytes' }, { type: 'bytes[]' }], ['0x0b060f' as Hex, [settle, params, take]]);
     const block = await this.client.getBlock({ blockTag: 'latest' });
     const calldata = encodeFunctionData({ abi: routerAbi, functionName: 'execute', args: ['0x10' as Hex, [swapInput], block.timestamp + 30n] });
-    return { calldata, expectedProfit: amountOut > repayAmount ? amountOut - repayAmount : 0n };
+    return { calldata, expectedProfit };
   }
 }
 
@@ -132,7 +146,7 @@ export class ViemChain implements Chain {
   }
 
   async quote(market: MarketAddresses, candidate: Candidate, repayAmount: bigint): Promise<SwapRoute> {
-    const provisional = await this.routes.quote(candidate, repayAmount, [], 1n);
+    const provisional = await this.routes.provisional(candidate);
     const simulation = await this.simulateSeizure(market, candidate, repayAmount, provisional);
     const route = await this.routes.quote(candidate, repayAmount, market.routePools, simulation.seizedAmount, simulation.fullSeizure ? candidate.poolId : undefined);
     route.expectedProfit = simulation.profit;
