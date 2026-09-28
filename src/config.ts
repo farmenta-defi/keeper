@@ -68,7 +68,7 @@ export function liquidatorConfig(argv = process.argv): LiquidatorConfig {
     maxIndexerLagSeconds: positiveInteger('KEEPER_MAX_INDEXER_LAG_SECONDS', 60),
     rpcCostPath: process.env.KEEPER_RPC_COST_PATH ?? './rpc-cost.json',
     v4Quoter: address('KEEPER_V4_QUOTER'), universalRouter: address('KEEPER_UNIVERSAL_ROUTER'), usdg: address('KEEPER_USDG'), recorder: address('KEEPER_TWAP_RECORDER'),
-    markets, treasury: required('KEEPER_TREASURY') as Address,
+    markets, treasury: address('KEEPER_TREASURY'),
     pollIntervalMs: positiveInteger('KEEPER_POLL_INTERVAL_MS', 2_000), maxCallBatch: positiveInteger('KEEPER_MAX_CALL_BATCH', 100),
     minGasBalance: BigInt(required('KEEPER_MIN_GAS_BALANCE_WEI')), dryRun: argv.includes('--dry-run'), ethUsd, multicall3: address('KEEPER_MULTICALL3'),
   };

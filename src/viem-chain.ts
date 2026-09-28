@@ -9,13 +9,14 @@ const lensAbi = parseAbi([
 ]);
 const marketAbi = parseAbi(['function debtOf(uint256 tokenId) view returns (uint256)', 'function asset() view returns (address)', 'function loanOf(uint256 tokenId) view returns (address owner, uint8 tier, uint256 debtShares, bytes32 poolKeyId)']);
 const policyAbi = parseAbi(['function listingOf(bytes32 poolId) view returns (bool,bool,uint8,uint16,uint16,uint16,uint40,uint40,uint16,uint16,uint128,uint128)']);
-const helperAbi = parseAbi(['function execute(uint256 tokenId, uint256 repayAmount, bytes swapCalldata)']);
+const helperAbi = parseAbi(['function execute(uint256 tokenId, uint256 repayAmount, bytes swapCalldata)', 'error FeePurchaseUnderfunded(uint256 required,uint256 available)', 'error PositionIsHealthy()', 'error SwapFailed(bytes4)']);
 const erc20Abi = parseAbi(['function balanceOf(address) view returns (uint256)', 'function transfer(address,uint256) returns (bool)']);
-const quoterAbi = parseAbi(['function quoteExactInputSingle((address,address,uint24,int24,address),bool,uint128,bytes) returns (uint256,uint256)']);
+const quoterAbi = parseAbi(['function quoteExactInputSingle(((address,address,uint24,int24,address),bool,uint128,bytes)) returns (uint256,uint256)']);
 const routerAbi = parseAbi(['function execute(bytes,bytes[],uint256) payable']);
 const recorderAbi = parseAbi(['function consult(bytes32,uint32) view returns (int24)', 'function record((address,address,uint24,int24,address))']);
 const OPEN_DELTA = 0n;
 const CONTRACT_BALANCE = 1n << 255n;
+const USDG_TO_18_DECIMAL_INPUT = 1_000_000_000_000n;
 
 class V4RouteBuilder {
   constructor(private readonly client: ReturnType<typeof createPublicClient>, private readonly quoter: Address, private readonly router: Address, private readonly usdg: Address) {}
@@ -28,14 +29,16 @@ class V4RouteBuilder {
     if (!zeroForOne && key.currency0.toLowerCase() !== usd) throw new Error('liquidation pool does not contain USDG');
     const input = zeroForOne ? key.currency0 : key.currency1;
     if (input.toLowerCase() === usd) throw new Error('liquidation route cannot swap USDG into USDG');
-    const quote = await this.client.simulateContract({ address: this.quoter, abi: quoterAbi, functionName: 'quoteExactInputSingle', args: [[key.currency0, key.currency1, key.fee, key.tickSpacing, key.hooks], zeroForOne, repayAmount, '0x'] });
+    const quoteInput = repayAmount * USDG_TO_18_DECIMAL_INPUT;
+    const quote = await this.client.simulateContract({ address: this.quoter, abi: quoterAbi, functionName: 'quoteExactInputSingle', args: [[[key.currency0, key.currency1, key.fee, key.tickSpacing, key.hooks], zeroForOne, quoteInput, '0x']] });
     const [amountOut] = quote.result as readonly [bigint, bigint];
     const minOut = amountOut * 9_950n / 10_000n;
     const params = encodeAbiParameters([{ type: 'tuple', components: [{ type: 'tuple', name: 'poolKey', components: [{ type: 'address', name: 'currency0' }, { type: 'address', name: 'currency1' }, { type: 'uint24', name: 'fee' }, { type: 'int24', name: 'tickSpacing' }, { type: 'address', name: 'hooks' }] }, { type: 'bool', name: 'zeroForOne' }, { type: 'uint128', name: 'amountIn' }, { type: 'uint128', name: 'amountOutMinimum' }, { type: 'uint256', name: 'minHopPriceX36' }, { type: 'bytes', name: 'hookData' }] }], [{ poolKey: { currency0: key.currency0, currency1: key.currency1, fee: key.fee, tickSpacing: key.tickSpacing, hooks: key.hooks }, zeroForOne, amountIn: OPEN_DELTA, amountOutMinimum: minOut, minHopPriceX36: 0n, hookData: '0x' }]);
     const settle = encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }, { type: 'bool' }], [input, CONTRACT_BALANCE, false]);
     const take = encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], [this.usdg, minOut]);
-    const swapInput = encodeAbiParameters([{ type: 'bytes' }, { type: 'bytes[]' }], ['0x060b0f' as Hex, [params, settle, take]]);
-    const calldata = encodeFunctionData({ abi: routerAbi, functionName: 'execute', args: ['0x10' as Hex, [swapInput], BigInt(Math.floor(Date.now() / 1_000) + 30)] });
+    const swapInput = encodeAbiParameters([{ type: 'bytes' }, { type: 'bytes[]' }], ['0x0b060f' as Hex, [settle, params, take]]);
+    const block = await this.client.getBlock({ blockTag: 'latest' });
+    const calldata = encodeFunctionData({ abi: routerAbi, functionName: 'execute', args: ['0x10' as Hex, [swapInput], block.timestamp + 30n] });
     return { calldata, expectedProfit: amountOut > repayAmount ? amountOut - repayAmount : 0n };
   }
 }
@@ -69,8 +72,8 @@ export class ViemChain implements Chain {
     const now = Math.floor(Date.now() / 1_000);
     const states = new Map<bigint, PositionState>();
     for (let index = 0; index < candidates.length; index += 1) {
-      const offset = index * 5;
       const width = this.recorder ? 6 : 5;
+      const offset = index * width;
       const values = results.slice(offset, offset + width);
       if (values.slice(0, 5).some((result) => result.status === 'failure')) continue;
       const loan = values[3]!.result as unknown as readonly [Address, number, bigint, `0x${string}`];
@@ -81,7 +84,7 @@ export class ViemChain implements Chain {
       states.set(candidates[index]!.tokenId, {
         healthFactor: values[0]!.result as bigint, closeFactorBps: Number(values[1]!.result), debt: values[2]!.result as bigint,
         rampStartsAt, rampEndsAt: rampEndsAt > now ? rampEndsAt : 0,
-        stale: width === 6 && values[5]!.status === 'failure',
+        stale: width === 6 && candidates[index]!.tier === 2 && values[5]!.status === 'failure',
       });
     }
     return states;
