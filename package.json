@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:fork": "vitest run --config vitest.fork.config.ts",
     "build": "tsc --noEmit",
-    "keeper:liquidate": "bun run src/run-liquidator.ts"
+    "keeper:liquidate": "bun run src/run-liquidator.ts",
+    "abi:generate": "bun run scripts/generate-abi.ts"
   },
   "dependencies": {
     "pg": "^8.23.0",
