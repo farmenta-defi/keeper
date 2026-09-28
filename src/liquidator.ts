@@ -1,7 +1,7 @@
 import type { AlertSink, Candidate, CandidateSource, Chain, MarketAddresses, PositionState, TransactionPlan } from './types.js';
 import { decodeErrorResult, parseAbi } from 'viem';
 
-const liquidationErrors = parseAbi(['error FeePurchaseUnderfunded(uint256 required,uint256 available)', 'error PositionIsHealthy()', 'error SwapFailed(bytes4)']);
+const liquidationErrors = parseAbi(['error FeePurchaseUnderfunded(uint256 required,uint256 available)', 'error PositionIsHealthy(uint256 tokenId,uint256 healthFactor)', 'error SwapFailed(bytes reason)']);
 
 const WAD = 10n ** 18n;
 const BPS = 10_000n;
@@ -160,9 +160,26 @@ function candidateKey(candidate: Candidate): string { return key(candidate); }
 function unixNow(): number { return Math.floor(Date.now() / 1_000); }
 function safeReason(error: unknown): string {
   const reason = error instanceof Error ? error.message : String(error);
+  const decoded = errorName(error);
+  if (decoded === 'PositionIsHealthy') return 'position was already healthy';
+  if (decoded === 'FeePurchaseUnderfunded') return 'fee purchase was underfunded';
   if (/FeePurchaseUnderfunded/.test(reason)) return 'fee purchase was underfunded';
   if (/PositionIsHealthy/.test(reason)) return 'position was already healthy';
   return 'simulation or execution failed';
+}
+
+function errorName(error: unknown): string | undefined {
+  const pending: unknown[] = [error];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object' || seen.has(current)) continue;
+    seen.add(current);
+    const value = current as Record<string, unknown>;
+    if (typeof value.errorName === 'string') return value.errorName;
+    for (const key of ['cause', 'data', 'originalError']) if (value[key] && typeof value[key] === 'object') pending.push(value[key]);
+  }
+  return undefined;
 }
 
 function feePurchaseRequired(error: unknown): bigint | undefined {
@@ -179,10 +196,21 @@ function feePurchaseRequired(error: unknown): bigint | undefined {
 }
 
 function errorData(error: unknown): `0x${string}` | undefined {
-  if (!error || typeof error !== 'object') return undefined;
-  const candidate = error as { data?: unknown; cause?: { data?: unknown } };
-  const data = candidate.data ?? candidate.cause?.data;
-  return typeof data === 'string' && data.startsWith('0x') ? data as `0x${string}` : undefined;
+  const pending: unknown[] = [error];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object' || seen.has(current)) continue;
+    seen.add(current);
+    const value = current as Record<string, unknown>;
+    for (const key of ['data', 'raw', 'originalError']) {
+      const candidate = value[key];
+      if (typeof candidate === 'string' && candidate.startsWith('0x')) return candidate as `0x${string}`;
+      if (candidate && typeof candidate === 'object') pending.push(candidate);
+    }
+    for (const key of ['cause', 'shortMessage']) if (value[key] && typeof value[key] === 'object') pending.push(value[key]);
+  }
+  return undefined;
 }
 
 function serializePlan(plan: TransactionPlan) {

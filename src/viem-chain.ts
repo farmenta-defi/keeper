@@ -9,7 +9,7 @@ const lensAbi = parseAbi([
 ]);
 const marketAbi = parseAbi(['function debtOf(uint256 tokenId) view returns (uint256)', 'function asset() view returns (address)', 'function loanOf(uint256 tokenId) view returns (address owner, uint8 tier, uint256 debtShares, bytes32 poolKeyId)']);
 const policyAbi = parseAbi(['function listingOf(bytes32 poolId) view returns (bool,bool,uint8,uint16,uint16,uint16,uint40,uint40,uint16,uint16,uint128,uint128)']);
-const helperAbi = parseAbi(['function execute(uint256 tokenId, uint256 repayAmount, bytes swapCalldata)', 'error FeePurchaseUnderfunded(uint256 required,uint256 available)', 'error PositionIsHealthy()', 'error SwapFailed(bytes4)']);
+const helperAbi = parseAbi(['function execute(uint256 tokenId, uint256 repayAmount, bytes swapCalldata)', 'error FeePurchaseUnderfunded(uint256 required,uint256 available)', 'error PositionIsHealthy(uint256 tokenId,uint256 healthFactor)', 'error SwapFailed(bytes reason)']);
 const erc20Abi = parseAbi(['function balanceOf(address) view returns (uint256)', 'function transfer(address,uint256) returns (bool)']);
 const quoterAbi = parseAbi(['function quoteExactInputSingle(((address,address,uint24,int24,address),bool,uint128,bytes)) returns (uint256,uint256)']);
 const routerAbi = parseAbi(['function execute(bytes,bytes[],uint256) payable']);
@@ -21,10 +21,12 @@ const USDG_TO_18_DECIMAL_INPUT = 1_000_000_000_000n;
 class V4RouteBuilder {
   constructor(private readonly client: ReturnType<typeof createPublicClient>, private readonly quoter: Address, private readonly router: Address, private readonly usdg: Address) {}
 
-  async quote(candidate: Candidate, repayAmount: bigint): Promise<SwapRoute> {
-    const key = candidate.poolKey;
-    if (!key) throw new Error(`pool key ${candidate.poolId} is unavailable from indexer`);
+  async quote(candidate: Candidate, repayAmount: bigint, configuredPools: PoolKey[] = []): Promise<SwapRoute> {
+    const keys = [...configuredPools, ...(candidate.poolKey ? [candidate.poolKey] : [])].filter((key, index, all) => all.findIndex((other) => other.id.toLowerCase() === key.id.toLowerCase()) === index);
+    if (keys.length === 0) throw new Error(`pool key ${candidate.poolId} is unavailable from indexer`);
     const usd = this.usdg.toLowerCase();
+    const quotes = [] as Array<{ key: PoolKey; zeroForOne: boolean; input: Address; amountOut: bigint }>;
+    for (const key of keys) {
     const zeroForOne = key.currency1.toLowerCase() === usd;
     if (!zeroForOne && key.currency0.toLowerCase() !== usd) throw new Error('liquidation pool does not contain USDG');
     const input = zeroForOne ? key.currency0 : key.currency1;
@@ -32,6 +34,9 @@ class V4RouteBuilder {
     const quoteInput = repayAmount * USDG_TO_18_DECIMAL_INPUT;
     const quote = await this.client.simulateContract({ address: this.quoter, abi: quoterAbi, functionName: 'quoteExactInputSingle', args: [[[key.currency0, key.currency1, key.fee, key.tickSpacing, key.hooks], zeroForOne, quoteInput, '0x']] });
     const [amountOut] = quote.result as readonly [bigint, bigint];
+      quotes.push({ key, zeroForOne, input, amountOut });
+    }
+    const { key, zeroForOne, input, amountOut } = quotes.reduce((best, quote) => quote.amountOut > best.amountOut ? quote : best);
     const minOut = amountOut * 9_950n / 10_000n;
     const params = encodeAbiParameters([{ type: 'tuple', components: [{ type: 'tuple', name: 'poolKey', components: [{ type: 'address', name: 'currency0' }, { type: 'address', name: 'currency1' }, { type: 'uint24', name: 'fee' }, { type: 'int24', name: 'tickSpacing' }, { type: 'address', name: 'hooks' }] }, { type: 'bool', name: 'zeroForOne' }, { type: 'uint128', name: 'amountIn' }, { type: 'uint128', name: 'amountOutMinimum' }, { type: 'uint256', name: 'minHopPriceX36' }, { type: 'bytes', name: 'hookData' }] }], [{ poolKey: { currency0: key.currency0, currency1: key.currency1, fee: key.fee, tickSpacing: key.tickSpacing, hooks: key.hooks }, zeroForOne, amountIn: OPEN_DELTA, amountOutMinimum: minOut, minHopPriceX36: 0n, hookData: '0x' }]);
     const settle = encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }, { type: 'bool' }], [input, CONTRACT_BALANCE, false]);
@@ -90,7 +95,7 @@ export class ViemChain implements Chain {
     return states;
   }
 
-  quote(_market: MarketAddresses, candidate: Candidate, repayAmount: bigint): Promise<SwapRoute> { return this.routes.quote(candidate, repayAmount); }
+  quote(market: MarketAddresses, candidate: Candidate, repayAmount: bigint): Promise<SwapRoute> { return this.routes.quote(candidate, repayAmount, market.routePools); }
 
   async simulate(market: MarketAddresses, candidate: Candidate, repayAmount: bigint, route: SwapRoute): Promise<bigint> {
     const simulation = await this.publicClient.simulateContract({ account: this.account, address: market.helper, abi: helperAbi, functionName: 'execute', args: [candidate.tokenId, repayAmount, route.calldata] });

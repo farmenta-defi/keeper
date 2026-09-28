@@ -39,7 +39,7 @@ export interface AlertSink { send(message: string): Promise<void> }
 export interface BackupPoolSource { staleMemePools(minimumAgeSeconds: number): Promise<PoolKey[]> }
 
 export interface Candidate { market: Address; tokenId: bigint; poolId: PoolId; tier: number; poolKey?: PoolKey }
-export interface MarketAddresses { market: Address; lens: Address; helper: Address; policy: Address }
+export interface MarketAddresses { market: Address; lens: Address; helper: Address; policy: Address; routePools?: PoolKey[] }
 export interface PositionState { healthFactor: bigint; debt: bigint; closeFactorBps: number; rampStartsAt: number; rampEndsAt: number; stale?: boolean }
 export interface SwapRoute { calldata: `0x${string}`; expectedProfit: bigint; requiredRepayAmount?: bigint }
 export interface TransactionPlan { candidate: Candidate; repayAmount: bigint; route: SwapRoute; gas: bigint; gasPrice: bigint }
