@@ -1,12 +1,18 @@
-# Farmenta keeper
+# Farmenta Keeper
 
-The keeper keeps meme-pool TWAP observations fresh. It is a separate operational repository so
-wallet credentials are not available to API workflows. The source of truth is
-[`ARCHITECTURE.md` §5.3 and §13](https://github.com/farmenta-defi/docs/blob/main/ARCHITECTURE.md).
+This repository contains Farmenta's off-chain keeper processes: a TWAP recorder scheduler, a
+backup recorder scheduler, and a liquidation monitor. The processes are separate from the
+indexer, so wallet credentials are not available to indexer workflows. This README documents
+their setup and operation; it does not indicate that any process is currently deployed or running.
+
+For public protocol information, see the [contract architecture](https://docs.farmenta.fun/docs/reference/architecture),
+[TwapRecorder reference](https://docs.farmenta.fun/docs/reference/twap-recorder),
+[indexer reference](https://docs.farmenta.fun/docs/reference/indexer), and
+[liquidator and keeper guide](https://docs.farmenta.fun/docs/liquidations/liquidator-guide).
 
 ## Schedulers
 
-- The VPS cron runs `scripts/keeper-record-batch-cron.sh` every five minutes. It checks Ponder's
+- The primary VPS deployment runs `scripts/keeper-record-batch-cron.sh` every five minutes. It checks Ponder's
   `/status`, selects active meme pools from `/loans/keeper-candidates` and `/pools`, confirms
   `debtOf` using Multicall3, sends one `recordBatch`, persists cost, and updates the primary
   heartbeat.
